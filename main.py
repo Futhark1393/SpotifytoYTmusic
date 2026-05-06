@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -123,26 +124,134 @@ def log_skipped(track: SpotifyTrack, reason: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Interactive setup wizard
+# ---------------------------------------------------------------------------
+
+ENV_FILE = Path(".env")
+REDIRECT_URI_DEFAULT = "http://127.0.0.1:8888/callback"
+
+
+def _needs_spotify_setup() -> bool:
+    """Return True if Spotify credentials are missing or still placeholders."""
+    cid = os.getenv("SPOTIFY_CLIENT_ID", "")
+    csec = os.getenv("SPOTIFY_CLIENT_SECRET", "")
+    placeholders = {"", "your_client_id_here", "your_client_secret_here"}
+    return cid in placeholders or csec in placeholders
+
+
+def _write_env(client_id: str, client_secret: str, redirect_uri: str) -> None:
+    """Write (or overwrite) the .env file with the supplied credentials."""
+    content = (
+        "# Spotify API Credentials\n"
+        "# Get these from https://developer.spotify.com/dashboard\n"
+        f"SPOTIFY_CLIENT_ID={client_id}\n"
+        f"SPOTIFY_CLIENT_SECRET={client_secret}\n"
+        f"SPOTIFY_REDIRECT_URI={redirect_uri}\n"
+    )
+    ENV_FILE.write_text(content, encoding="utf-8")
+
+
+def _update_env_value(key: str, value: str) -> None:
+    """Update a single key in the existing .env file, or append it."""
+    if ENV_FILE.exists():
+        text = ENV_FILE.read_text(encoding="utf-8")
+        pattern = rf"^{re.escape(key)}=.*$"
+        if re.search(pattern, text, flags=re.MULTILINE):
+            text = re.sub(pattern, f"{key}={value}", text, flags=re.MULTILINE)
+            ENV_FILE.write_text(text, encoding="utf-8")
+            return
+        # key not found – append
+        text += f"\n{key}={value}\n"
+        ENV_FILE.write_text(text, encoding="utf-8")
+    else:
+        ENV_FILE.write_text(f"{key}={value}\n", encoding="utf-8")
+
+
+def interactive_setup() -> None:
+    """Run an interactive wizard to collect Spotify API credentials.
+
+    Called automatically on first run when .env is missing or incomplete.
+    """
+    console.print(
+        Panel(
+            "[bold yellow]First-time setup detected![/bold yellow]\n\n"
+            "You need Spotify API credentials to use this tool.\n"
+            "Get them from [bold cyan][link=https://developer.spotify.com/dashboard]"
+            "developer.spotify.com/dashboard[/link][/bold cyan]\n\n"
+            "[dim]1. Create an app (or use an existing one)\n"
+            "2. Copy your Client ID and Client Secret\n"
+            "3. Add [bold]http://127.0.0.1:8888/callback[/bold] as a Redirect URI[/dim]",
+            title="[bold green]⚙  Setup Wizard[/bold green]",
+            border_style="green",
+            padding=(1, 2),
+        )
+    )
+
+    # Collect Client ID
+    while True:
+        client_id = console.input("[bold cyan]  Spotify Client ID:[/bold cyan] ").strip()
+        if client_id:
+            break
+        console.print("  [red]Client ID cannot be empty.[/red]")
+
+    # Collect Client Secret
+    while True:
+        client_secret = console.input("[bold cyan]  Spotify Client Secret:[/bold cyan] ").strip()
+        if client_secret:
+            break
+        console.print("  [red]Client Secret cannot be empty.[/red]")
+
+    # Redirect URI (offer default)
+    redirect_uri = console.input(
+        f"[bold cyan]  Redirect URI[/bold cyan] [dim](Enter for {REDIRECT_URI_DEFAULT}):[/dim] "
+    ).strip()
+    if not redirect_uri:
+        redirect_uri = REDIRECT_URI_DEFAULT
+
+    # Write to .env
+    _write_env(client_id, client_secret, redirect_uri)
+
+    # Reload env vars so the rest of the app sees them
+    os.environ["SPOTIFY_CLIENT_ID"] = client_id
+    os.environ["SPOTIFY_CLIENT_SECRET"] = client_secret
+    os.environ["SPOTIFY_REDIRECT_URI"] = redirect_uri
+
+    console.print()
+    console.print(
+        "[bold green]  ✓  Credentials saved to .env[/bold green]\n"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Preflight checks
 # ---------------------------------------------------------------------------
 
 def preflight_check() -> None:
-    """Validate all prerequisites. Prints a rich error panel and exits if any fail."""
-    errors: list[str] = []
+    """Validate all prerequisites.
 
+    If Spotify credentials are missing, launches the interactive setup wizard
+    instead of just exiting.
+    """
+    # --- Spotify credentials ---
+    if _needs_spotify_setup():
+        interactive_setup()
+
+    # Re-check after wizard (in case user Ctrl-C'd or entered bad values)
+    errors: list[str] = []
     client_id = os.getenv("SPOTIFY_CLIENT_ID", "")
     client_secret = os.getenv("SPOTIFY_CLIENT_SECRET", "")
     if not client_id or client_id == "your_client_id_here":
         errors.append(
-            "[bold]SPOTIFY_CLIENT_ID[/bold] missing in .env\n"
+            "[bold]SPOTIFY_CLIENT_ID[/bold] is still missing in .env\n"
             "  → [link=https://developer.spotify.com/dashboard]developer.spotify.com/dashboard[/link]"
         )
     if not client_secret or client_secret == "your_client_secret_here":
         errors.append(
-            "[bold]SPOTIFY_CLIENT_SECRET[/bold] missing in .env\n"
+            "[bold]SPOTIFY_CLIENT_SECRET[/bold] is still missing in .env\n"
             "  → Dashboard → Your App → Settings → View client secret"
         )
 
+    # --- browser.json ---
     if not Path("browser.json").exists():
         errors.append(
             "[bold]browser.json[/bold] not found\n"
