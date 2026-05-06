@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="Spotify to YouTube Music Banner" width="100%">
+</p>
+
 # Spotify → YouTube Music Transfer Tool
 
 ![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
