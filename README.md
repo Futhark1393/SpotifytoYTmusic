@@ -1,6 +1,7 @@
 # Spotify → YouTube Music Transfer Tool
 
 ![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
+![Build](https://github.com/kemalsebzeci/SpotifytoYTmusic/actions/workflows/lint.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-yellow.svg)
 ![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)
 
