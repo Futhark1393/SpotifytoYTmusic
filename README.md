@@ -58,6 +58,21 @@ Follow the prompts to create `browser.json`. You will need to paste your request
 
 ## Usage
 
+### Using Docker (Recommended)
+
+You can run the tool without installing Python locally using Docker. Make sure you have your `.env` and `browser.json` files ready in the project directory.
+
+```bash
+docker build -t spotify2ytmusic .
+docker run -it --rm \
+  -v $(pwd)/.env:/app/.env \
+  -v $(pwd)/browser.json:/app/browser.json \
+  -v $(pwd)/match_cache.db:/app/match_cache.db \
+  spotify2ytmusic --help
+```
+
+### Using Python
+
 ```bash
 # Full transfer
 python main.py
