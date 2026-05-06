@@ -51,21 +51,22 @@ class TrackMatcher:
     def find_best_match(
         self,
         query: str,
-    ) -> Optional[MatchResult]:
-        """Search YouTube Music for *query* and return the best fuzzy match.
+    ) -> tuple[Optional[MatchResult], list[MatchResult]]:
+        """Search YouTube Music for *query* and return the best fuzzy match and candidates.
 
         Args:
             query: Search string, typically "artist - track name".
 
         Returns:
-            A MatchResult if a hit exceeds *threshold*, otherwise None.
+            A tuple of (MatchResult if a hit exceeds *threshold* else None, list of candidates).
         """
         results = self._yt.search(query, limit=self.top_n)
         if not results:
             logger.debug("No YTMusic results for: %s", query)
-            return None
+            return None, []
 
         normalised_query = normalize_text(query)
+        candidates: list[MatchResult] = []
         best: Optional[MatchResult] = None
         best_score: float = 0.0
 
@@ -82,6 +83,8 @@ class TrackMatcher:
 
             normalised_candidate = normalize_text(candidate)
             score = fuzz.token_sort_ratio(normalised_query, normalised_candidate)
+            
+            candidates.append(MatchResult(video_id=video_id, title=candidate, score=score))
 
             logger.debug(
                 "  candidate: %-60s  score: %.1f", candidate[:60], score
@@ -89,11 +92,14 @@ class TrackMatcher:
 
             if score > best_score:
                 best_score = score
-                best = MatchResult(video_id=video_id, title=candidate, score=score)
+                best = candidates[-1]
+
+        # Sort candidates by score descending
+        candidates.sort(key=lambda c: c.score, reverse=True)
 
         if best and best.score >= self.threshold:
             logger.debug("Best match for '%s': %s (%.1f)", query, best.title, best.score)
-            return best
+            return best, candidates
 
         logger.debug(
             "No match above threshold (%.0f) for: %s (best was %.1f)",
@@ -101,4 +107,4 @@ class TrackMatcher:
             query,
             best_score,
         )
-        return None
+        return None, candidates

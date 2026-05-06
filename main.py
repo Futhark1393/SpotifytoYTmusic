@@ -109,6 +109,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Max retry attempts for transient errors (default=5).")
     p.add_argument("--playlist", type=str, default=None,
                    help="Spotify Playlist ID or URL to transfer instead of Liked Songs.")
+    p.add_argument("--interactive", "-i", action="store_true",
+                   help="Prompt manually for songs that fail the threshold match.")
     return p
 
 def extract_playlist_id(url_or_id: str) -> str:
@@ -288,36 +290,37 @@ def _match_one(
     matcher: TrackMatcher,
     cache: MatchCache,
     resume: bool,
-) -> tuple[SpotifyTrack, Optional[MatchResult], str]:
+) -> tuple[SpotifyTrack, Optional[MatchResult], str, list[MatchResult]]:
     """Attempt to match a single Spotify track on YouTube Music."""
     key = track.search_key
 
     cached = cache.get(key)
     if cached is not None:
         if cached == SKIP_SENTINEL:
-            return (track, None, "cached_skip")
+            return (track, None, "cached_skip", [])
         return (
             track,
             MatchResult(video_id=cached, title="(cached)", score=100.0),
             "cached",
+            []
         )
 
     if resume and cache.contains(key):
-        return (track, None, "resumed")
+        return (track, None, "resumed", [])
 
     try:
-        result = matcher.find_best_match(key)
+        result, candidates = matcher.find_best_match(key)
     except Exception as exc:
         logger.error("Error matching '%s': %s", key, exc)
         cache.put(key, SKIP_SENTINEL)
-        return (track, None, "error")
+        return (track, None, "error", [])
 
     if result is None:
         cache.put(key, SKIP_SENTINEL)
-        return (track, None, "skipped")
+        return (track, None, "skipped", candidates)
 
     cache.put(key, result.video_id)
-    return (track, result, "matched")
+    return (track, result, "matched", candidates)
 
 
 # ---------------------------------------------------------------------------
@@ -377,6 +380,7 @@ def run(args: argparse.Namespace) -> None:
     matched_ids: list[str] = []
     added_set: set[str] = set()
     stats = {"matched": 0, "skipped": 0, "cached": 0, "errors": 0}
+    needs_review: list[tuple[SpotifyTrack, list[MatchResult]]] = []
 
     progress = Progress(
         SpinnerColumn(),
@@ -398,7 +402,7 @@ def run(args: argparse.Namespace) -> None:
                     for trk in tracks
                 }
                 for future in as_completed(futures):
-                    trk, result, status_str = future.result()
+                    trk, result, status_str, candidates = future.result()
                     if status_str in ("matched", "cached"):
                         assert result is not None
                         vid = result.video_id
@@ -411,12 +415,41 @@ def run(args: argparse.Namespace) -> None:
                     elif status_str == "cached_skip":
                         stats["skipped"] += 1
                     elif status_str == "skipped":
-                        stats["skipped"] += 1
-                        log_skipped(trk, "no match above threshold")
+                        if args.interactive and candidates:
+                            needs_review.append((trk, candidates))
+                        else:
+                            stats["skipped"] += 1
+                            log_skipped(trk, "no match above threshold")
                     elif status_str == "error":
                         stats["errors"] += 1
                         log_skipped(trk, "error during matching")
                     progress.advance(task)
+
+    # ---- 3.5 Interactive Review ----
+    if args.interactive and needs_review:
+        from rich.prompt import Prompt
+        console.print(f"\n[bold yellow]⚠️  {len(needs_review)} songs need manual review:[/bold yellow]")
+        for trk, candidates in needs_review:
+            console.print(f"\n[bold cyan]?[/bold cyan] [white]{trk.search_key}[/white] was not matched confidently.")
+            for idx, c in enumerate(candidates[:5], start=1):
+                console.print(f"   [bold]{idx})[/bold] {c.title} [dim][Score: {c.score:.1f}%][/dim]")
+            console.print("   [bold]0)[/bold] Skip this song")
+            
+            choices = [str(i) for i in range(len(candidates[:5]) + 1)]
+            choice = Prompt.ask("Choice", choices=choices, default="0")
+            
+            if choice != "0":
+                picked = candidates[int(choice) - 1]
+                vid = picked.video_id
+                if vid not in added_set:
+                    matched_ids.append(vid)
+                    added_set.add(vid)
+                stats["matched"] += 1
+                cache.put(trk.search_key, vid)  # Overwrite SKIP_SENTINEL
+                console.print(f"  [green]✓ Added '{picked.title}'[/green]")
+            else:
+                stats["skipped"] += 1
+                log_skipped(trk, "skipped interactively")
 
     # ---- 4. Add to YouTube Music playlist ----
     if args.dry_run:
