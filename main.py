@@ -107,7 +107,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Max concurrent YouTube search workers (default=5).")
     p.add_argument("--max-retries", type=int, default=5,
                    help="Max retry attempts for transient errors (default=5).")
+    p.add_argument("--playlist", type=str, default=None,
+                   help="Spotify Playlist ID or URL to transfer instead of Liked Songs.")
     return p
+
+def extract_playlist_id(url_or_id: str) -> str:
+    """Extract just the ID from a Spotify playlist URL, or return as-is."""
+    import urllib.parse
+    if "spotify.com" in url_or_id:
+        path = urllib.parse.urlparse(url_or_id).path
+        return path.split("/")[-1]
+    return url_or_id
 
 
 # ---------------------------------------------------------------------------
@@ -328,15 +338,28 @@ def run(args: argparse.Namespace) -> None:
     overall_timer = Timer("Total")
     overall_timer.__enter__()
 
-    # ---- 1. Fetch Spotify liked songs ----
+    # ---- 1. Fetch Spotify songs ----
     with console.status("[bold green]Connecting to Spotify…[/bold green]"):
         sp = SpotifyClient()
 
-    with console.status("[bold green]Fetching your Liked Songs from Spotify…[/bold green]") as status:
-        tracks = sp.fetch_liked_songs(limit=args.limit)
-        status.update(f"[bold green]Fetched {len(tracks)} songs![/bold green]")
+    if args.playlist:
+        pl_id = extract_playlist_id(args.playlist)
+        with console.status("[bold green]Fetching Playlist name…[/bold green]"):
+            sp_playlist_name = sp.get_playlist_name(pl_id)
+            yt_playlist_name = f"{sp_playlist_name} (Backup)"
+        
+        with console.status(f"[bold green]Fetching tracks from '{sp_playlist_name}'…[/bold green]") as status:
+            tracks = sp.fetch_playlist_tracks(pl_id, limit=args.limit)
+            status.update(f"[bold green]Fetched {len(tracks)} songs![/bold green]")
+        
+        console.print(f"  [cyan]🎵  {len(tracks)} songs fetched from playlist '{sp_playlist_name}'[/cyan]\n")
+    else:
+        yt_playlist_name = "Spotify Liked Songs Backup"
+        with console.status("[bold green]Fetching your Liked Songs from Spotify…[/bold green]") as status:
+            tracks = sp.fetch_liked_songs(limit=args.limit)
+            status.update(f"[bold green]Fetched {len(tracks)} songs![/bold green]")
 
-    console.print(f"  [cyan]🎵  {len(tracks)} liked songs fetched from Spotify[/cyan]\n")
+        console.print(f"  [cyan]🎵  {len(tracks)} liked songs fetched from Spotify[/cyan]\n")
 
     if not tracks:
         console.print("[yellow]No liked songs found. Exiting.[/yellow]")
@@ -399,8 +422,8 @@ def run(args: argparse.Namespace) -> None:
     if args.dry_run:
         console.print("\n[yellow]⚡ Dry-run mode — playlist NOT modified.[/yellow]")
     else:
-        with console.status("[bold green]Creating / finding YouTube Music playlist…[/bold green]"):
-            playlist_id = yt.get_or_create_playlist()
+        with console.status(f"[bold green]Creating / finding YouTube Music playlist '{yt_playlist_name}'…[/bold green]"):
+            playlist_id = yt.get_or_create_playlist(title=yt_playlist_name)
 
         batch_size = 25
         total_batches = (len(matched_ids) + batch_size - 1) // batch_size
