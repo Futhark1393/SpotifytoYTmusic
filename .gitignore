@@ -1,0 +1,23 @@
+# Environment & credentials
+.env
+headers.json
+browser.json
+
+# Cache & logs
+match_cache.db
+skipped.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Spotify auth cache
+.cache
+.cache-*
+
+# IDE
+.vscode/
+.idea/

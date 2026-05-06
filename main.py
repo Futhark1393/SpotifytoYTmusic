@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""
+spotify2ytmusic – Transfer Spotify Liked Songs to YouTube Music.
+
+Usage:
+    python main.py                         # full transfer
+    python main.py --limit 50              # process first 50 songs
+    python main.py --resume                # skip already-cached songs
+    python main.py --dry-run --verbose     # match only, no playlist changes
+
+Setup:
+    1. pip install -r requirements.txt
+    2. Copy .env.example to .env and fill in your Spotify credentials.
+    3. Run `ytmusicapi browser` to create browser.json for YouTube Music.
+    4. python main.py
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Optional
+
+from dotenv import load_dotenv
+from rich import box
+from rich.console import Console
+from rich.logging import RichHandler
+from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
+from rich.table import Table
+from rich.text import Text
+
+from cache import SKIP_SENTINEL, MatchCache
+from matcher import MatchResult, TrackMatcher
+from spotify_client import SpotifyClient, SpotifyTrack
+from utils import Timer, setup_logging
+from ytmusic_client import YTMusicClient
+
+console = Console()
+logger: logging.Logger  # initialised in main()
+
+BANNER = r"""
+[bold green]
+  ███████╗██████╗  ██████╗ ████████╗██╗███████╗██╗   ██╗
+  ██╔════╝██╔══██╗██╔═══██╗╚══██╔══╝██║██╔════╝╚██╗ ██╔╝
+  ███████╗██████╔╝██║   ██║   ██║   ██║█████╗   ╚████╔╝
+  ╚════██║██╔═══╝ ██║   ██║   ██║   ██║██╔══╝    ╚██╔╝
+  ███████║██║     ╚██████╔╝   ██║   ██║██║        ██║
+  ╚══════╝╚═╝      ╚═════╝    ╚═╝   ╚═╝╚═╝        ╚═╝[/bold green]
+[dim]          Spotify Liked Songs → YouTube Music Transfer[/dim]
+"""
+
+
+# ---------------------------------------------------------------------------
+# Logging with Rich
+# ---------------------------------------------------------------------------
+
+def setup_rich_logging(verbose: bool = False) -> logging.Logger:
+    """Configure Rich-powered logging."""
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(message)s",
+        datefmt="[%H:%M:%S]",
+        handlers=[RichHandler(console=console, rich_tracebacks=True, markup=True)],
+    )
+    logger = logging.getLogger("spotify2ytmusic")
+    logger.setLevel(level)
+    return logger
+
+
+# ---------------------------------------------------------------------------
+# CLI argument parser
+# ---------------------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build and return the CLI argument parser."""
+    p = argparse.ArgumentParser(
+        prog="spotify2ytmusic",
+        description="Transfer your Spotify Liked Songs to YouTube Music.",
+    )
+    p.add_argument("--limit", type=int, default=None,
+                   help="Process only the first N liked songs.")
+    p.add_argument("--resume", action="store_true",
+                   help="Skip songs already present in the cache.")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Match songs but do NOT create/modify the playlist.")
+    p.add_argument("--verbose", "-v", action="store_true",
+                   help="Enable debug-level logging.")
+    p.add_argument("--threshold", type=float, default=80.0,
+                   help="Minimum fuzzy-match score (0-100, default=80).")
+    p.add_argument("--workers", type=int, default=5,
+                   help="Max concurrent YouTube search workers (default=5).")
+    p.add_argument("--max-retries", type=int, default=5,
+                   help="Max retry attempts for transient errors (default=5).")
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Skipped-songs logger
+# ---------------------------------------------------------------------------
+
+SKIPPED_LOG = Path("skipped.log")
+
+
+def log_skipped(track: SpotifyTrack, reason: str) -> None:
+    """Append a line to skipped.log."""
+    with open(SKIPPED_LOG, "a", encoding="utf-8") as f:
+        f.write(f"{track.search_key}  |  {reason}\n")
+
+
+# ---------------------------------------------------------------------------
+# Preflight checks
+# ---------------------------------------------------------------------------
+
+def preflight_check() -> None:
+    """Validate all prerequisites. Prints a rich error panel and exits if any fail."""
+    errors: list[str] = []
+
+    client_id = os.getenv("SPOTIFY_CLIENT_ID", "")
+    client_secret = os.getenv("SPOTIFY_CLIENT_SECRET", "")
+    if not client_id or client_id == "your_client_id_here":
+        errors.append(
+            "[bold]SPOTIFY_CLIENT_ID[/bold] missing in .env\n"
+            "  → [link=https://developer.spotify.com/dashboard]developer.spotify.com/dashboard[/link]"
+        )
+    if not client_secret or client_secret == "your_client_secret_here":
+        errors.append(
+            "[bold]SPOTIFY_CLIENT_SECRET[/bold] missing in .env\n"
+            "  → Dashboard → Your App → Settings → View client secret"
+        )
+
+    if not Path("browser.json").exists():
+        errors.append(
+            "[bold]browser.json[/bold] not found\n"
+            "  → Run: [bold cyan]ytmusicapi browser[/bold cyan]\n"
+            "  → Then paste headers from [link=https://music.youtube.com]music.youtube.com[/link] DevTools (F12 → Network → any POST request)"
+        )
+
+    if errors:
+        msg = "\n\n".join(f"[red]✗[/red]  {e}" for e in errors)
+        console.print(Panel(msg, title="[red bold]Setup Incomplete[/red bold]",
+                            border_style="red", padding=(1, 2)))
+        sys.exit(1)
+
+    console.print("[bold green]✓[/bold green]  All credentials verified — let's go!\n")
+
+
+# ---------------------------------------------------------------------------
+# Worker: match a single track
+# ---------------------------------------------------------------------------
+
+def _match_one(
+    track: SpotifyTrack,
+    matcher: TrackMatcher,
+    cache: MatchCache,
+    resume: bool,
+) -> tuple[SpotifyTrack, Optional[MatchResult], str]:
+    """Attempt to match a single Spotify track on YouTube Music."""
+    key = track.search_key
+
+    cached = cache.get(key)
+    if cached is not None:
+        if cached == SKIP_SENTINEL:
+            return (track, None, "cached_skip")
+        return (
+            track,
+            MatchResult(video_id=cached, title="(cached)", score=100.0),
+            "cached",
+        )
+
+    if resume and cache.contains(key):
+        return (track, None, "resumed")
+
+    try:
+        result = matcher.find_best_match(key)
+    except Exception as exc:
+        logger.error("Error matching '%s': %s", key, exc)
+        cache.put(key, SKIP_SENTINEL)
+        return (track, None, "error")
+
+    if result is None:
+        cache.put(key, SKIP_SENTINEL)
+        return (track, None, "skipped")
+
+    cache.put(key, result.video_id)
+    return (track, result, "matched")
+
+
+# ---------------------------------------------------------------------------
+# Main orchestration
+# ---------------------------------------------------------------------------
+
+def run(args: argparse.Namespace) -> None:
+    """Execute the full transfer pipeline."""
+    global logger
+    logger = setup_rich_logging(verbose=args.verbose)
+
+    load_dotenv()
+
+    # ---- 0. Banner + preflight ----
+    console.print(BANNER)
+    preflight_check()
+
+    overall_timer = Timer("Total")
+    overall_timer.__enter__()
+
+    # ---- 1. Fetch Spotify liked songs ----
+    with console.status("[bold green]Connecting to Spotify…[/bold green]"):
+        sp = SpotifyClient()
+
+    with console.status("[bold green]Fetching your Liked Songs from Spotify…[/bold green]") as status:
+        tracks = sp.fetch_liked_songs(limit=args.limit)
+        status.update(f"[bold green]Fetched {len(tracks)} songs![/bold green]")
+
+    console.print(f"  [cyan]🎵  {len(tracks)} liked songs fetched from Spotify[/cyan]\n")
+
+    if not tracks:
+        console.print("[yellow]No liked songs found. Exiting.[/yellow]")
+        return
+
+    # ---- 2. Initialise YouTube Music & matcher ----
+    with console.status("[bold green]Connecting to YouTube Music…[/bold green]"):
+        yt = YTMusicClient()
+        matcher = TrackMatcher(yt, threshold=args.threshold)
+        cache = MatchCache()
+
+    console.print(f"  [cyan]📺  YouTube Music ready  |  Match threshold: {args.threshold:.0f}%  |  Workers: {args.workers}[/cyan]\n")
+
+    # ---- 3. Match songs (parallel) ----
+    matched_ids: list[str] = []
+    added_set: set[str] = set()
+    stats = {"matched": 0, "skipped": 0, "cached": 0, "errors": 0}
+
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(bar_width=40),
+        MofNCompleteColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    )
+
+    with Timer("Matching") as t_match:
+        with progress:
+            task = progress.add_task("Matching songs…", total=len(tracks))
+            with ThreadPoolExecutor(max_workers=args.workers) as pool:
+                futures = {
+                    pool.submit(_match_one, trk, matcher, cache, args.resume): trk
+                    for trk in tracks
+                }
+                for future in as_completed(futures):
+                    trk, result, status_str = future.result()
+                    if status_str in ("matched", "cached"):
+                        vid = result.video_id  # type: ignore[union-attr]
+                        if vid not in added_set:
+                            matched_ids.append(vid)
+                            added_set.add(vid)
+                        stats["matched"] += 1
+                        if status_str == "cached":
+                            stats["cached"] += 1
+                    elif status_str == "cached_skip":
+                        stats["skipped"] += 1
+                    elif status_str == "skipped":
+                        stats["skipped"] += 1
+                        log_skipped(trk, "no match above threshold")
+                    elif status_str == "error":
+                        stats["errors"] += 1
+                        log_skipped(trk, "error during matching")
+                    progress.advance(task)
+
+    # ---- 4. Add to YouTube Music playlist ----
+    if args.dry_run:
+        console.print("\n[yellow]⚡ Dry-run mode — playlist NOT modified.[/yellow]")
+    else:
+        with console.status("[bold green]Creating / finding YouTube Music playlist…[/bold green]"):
+            playlist_id = yt.get_or_create_playlist()
+
+        batch_size = 25
+        total_batches = (len(matched_ids) + batch_size - 1) // batch_size
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(bar_width=40),
+            MofNCompleteColumn(),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+            console=console,
+        ) as prog2:
+            btask = prog2.add_task("Adding to playlist…", total=total_batches)
+            for i in range(0, len(matched_ids), batch_size):
+                batch = matched_ids[i: i + batch_size]
+                try:
+                    yt.add_tracks_to_playlist(playlist_id, batch)
+                except Exception as exc:
+                    logger.error("Failed adding batch %d: %s", i // batch_size, exc)
+                prog2.advance(btask)
+
+    overall_timer.__exit__(None, None, None)
+
+    # ---- 5. Rich summary table ----
+    match_pct = (stats["matched"] / len(tracks) * 100) if tracks else 0
+    skip_pct = (stats["skipped"] / len(tracks) * 100) if tracks else 0
+
+    table = Table(
+        title="Transfer Complete 🎉",
+        box=box.ROUNDED,
+        border_style="green",
+        title_style="bold green",
+        show_header=True,
+        header_style="bold cyan",
+        min_width=46,
+    )
+    table.add_column("Metric", style="bold white", justify="left")
+    table.add_column("Value", justify="right")
+
+    table.add_row("Total songs fetched", f"[white]{len(tracks)}[/white]")
+    table.add_row(
+        "Matched & added",
+        f"[green]{stats['matched']}[/green] [dim]({match_pct:.1f}%)[/dim]",
+    )
+    table.add_row(
+        "Skipped (no match)",
+        f"[yellow]{stats['skipped']}[/yellow] [dim]({skip_pct:.1f}%)[/dim]",
+    )
+    table.add_row("Errors", f"[red]{stats['errors']}[/red]")
+    table.add_row("Cache hits", f"[cyan]{cache.hits}[/cyan]")
+    table.add_row("Time taken", f"[magenta]{overall_timer}[/magenta]")
+
+    if stats["skipped"] > 0:
+        table.add_section()
+        table.add_row(
+            "[dim]Skipped tracks log[/dim]",
+            f"[dim]{SKIPPED_LOG}[/dim]",
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+
+    if args.dry_run:
+        console.print("[yellow]ℹ  Dry-run: no changes were made to YouTube Music.[/yellow]\n")
+
+    cache.close()
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    """Parse args and run."""
+    parser = build_parser()
+    args = parser.parse_args()
+    try:
+        run(args)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Interrupted by user.[/yellow]")
+        sys.exit(130)
+    except Exception as exc:
+        console.print_exception()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
