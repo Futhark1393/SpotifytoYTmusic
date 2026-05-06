@@ -47,7 +47,7 @@ from rich.text import Text
 from cache import SKIP_SENTINEL, MatchCache
 from matcher import MatchResult, TrackMatcher
 from spotify_client import SpotifyClient, SpotifyTrack
-from utils import Timer, setup_logging
+from utils import Timer
 from ytmusic_client import YTMusicClient
 
 console = Console()
@@ -149,6 +149,7 @@ def _write_env(client_id: str, client_secret: str, redirect_uri: str) -> None:
         f"SPOTIFY_REDIRECT_URI={redirect_uri}\n"
     )
     ENV_FILE.write_text(content, encoding="utf-8")
+    ENV_FILE.chmod(0o600)
 
 
 def _update_env_value(key: str, value: str) -> None:
@@ -159,12 +160,14 @@ def _update_env_value(key: str, value: str) -> None:
         if re.search(pattern, text, flags=re.MULTILINE):
             text = re.sub(pattern, f"{key}={value}", text, flags=re.MULTILINE)
             ENV_FILE.write_text(text, encoding="utf-8")
+            ENV_FILE.chmod(0o600)
             return
         # key not found – append
         text += f"\n{key}={value}\n"
         ENV_FILE.write_text(text, encoding="utf-8")
     else:
         ENV_FILE.write_text(f"{key}={value}\n", encoding="utf-8")
+    ENV_FILE.chmod(0o600)
 
 
 def interactive_setup() -> None:
@@ -212,9 +215,7 @@ def interactive_setup() -> None:
     _write_env(client_id, client_secret, redirect_uri)
 
     # Reload env vars so the rest of the app sees them
-    os.environ["SPOTIFY_CLIENT_ID"] = client_id
-    os.environ["SPOTIFY_CLIENT_SECRET"] = client_secret
-    os.environ["SPOTIFY_REDIRECT_URI"] = redirect_uri
+    load_dotenv(override=True)
 
     console.print()
     console.print(
@@ -376,7 +377,8 @@ def run(args: argparse.Namespace) -> None:
                 for future in as_completed(futures):
                     trk, result, status_str = future.result()
                     if status_str in ("matched", "cached"):
-                        vid = result.video_id  # type: ignore[union-attr]
+                        assert result is not None
+                        vid = result.video_id
                         if vid not in added_set:
                             matched_ids.append(vid)
                             added_set.add(vid)

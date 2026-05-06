@@ -13,27 +13,6 @@ from typing import Any, Callable, Optional, TypeVar
 F = TypeVar("F", bound=Callable[..., Any])
 
 # ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-
-def setup_logging(verbose: bool = False) -> logging.Logger:
-    """Configure root logger and return the application logger.
-
-    Args:
-        verbose: If True, set level to DEBUG; otherwise INFO.
-
-    Returns:
-        Configured logger instance.
-    """
-    level = logging.DEBUG if verbose else logging.INFO
-    fmt = "%(asctime)s │ %(levelname)-7s │ %(message)s"
-    logging.basicConfig(level=level, format=fmt, datefmt="%H:%M:%S")
-    logger = logging.getLogger("spotify2ytmusic")
-    logger.setLevel(level)
-    return logger
-
-
-# ---------------------------------------------------------------------------
 # Retry decorator with exponential back-off
 # ---------------------------------------------------------------------------
 
