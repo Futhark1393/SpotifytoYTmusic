@@ -1,5 +1,9 @@
 # Spotify → YouTube Music Transfer Tool
 
+![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
+![License](https://img.shields.io/badge/license-MIT-yellow.svg)
+![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)
+
 A production-ready CLI tool that transfers your **Liked Songs** from Spotify to YouTube Music with fuzzy matching, caching, rate-limit handling, and parallel processing.
 
 ## Features
