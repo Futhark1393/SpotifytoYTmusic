@@ -14,13 +14,15 @@ A production-ready CLI tool that transfers your **Liked Songs** from Spotify to 
 ## Features
 
 - **Full Spotify library export** – Fetches all liked songs via OAuth with automatic pagination
+- **Spotify PKCE support** – Client Secret optional; PKCE used when missing
+- **YouTube Music OAuth support** – Supports oauth.json (no header copy) or browser.json
 - **Fuzzy matching** – Uses `rapidfuzz` (token_sort_ratio) to find the best YouTube Music match
 - **SQLite cache** – Avoids redundant API calls across runs
 - **Rate-limit handling** – Exponential backoff + jitter on HTTP 429 / transient errors
 - **Parallel search** – Thread pool (configurable workers) for YouTube Music lookups
 - **Resume support** – Pick up where you left off with `--resume`
 - **Dry-run mode** – Test matching without modifying playlists
-- **Progress bar** – Real-time progress via `tqdm`
+- **Progress bar** – Real-time progress via Rich
 - **Skipped log** – All unmatched/failed tracks logged to `skipped.log`
 - **Playlist import** – Transfer a Spotify playlist by ID/URL (`--playlist`)
 - **Interactive review** – Manually pick matches below threshold (`--interactive`)
@@ -29,55 +31,57 @@ A production-ready CLI tool that transfers your **Liked Songs** from Spotify to 
 
 ## Setup
 
+Recommended auth path: Spotify PKCE (no Client Secret required) + YouTube Music OAuth (oauth.json).
+
 ### 1. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Spotify credentials (interactive wizard)
-
-On first run, the CLI will automatically detect that credentials are missing and launch an **interactive setup wizard** that walks you through entering your Spotify API keys:
-
-```
-⚙  Setup Wizard
-  Spotify Client ID:     <paste your client id>
-  Spotify Client Secret: <paste your client secret>
-  Redirect URI:          (Enter for http://127.0.0.1:8888/callback)
-
-  ✓  Credentials saved to .env
-```
-
-To get your credentials:
-
-1. Go to [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
-2. Create an app and note your **Client ID** and **Client Secret**
-3. Add `http://127.0.0.1:8888/callback` as a Redirect URI
-
-> [!TIP]
-> You can also manually create a `.env` file from the template: `cp .env.example .env`
-
-### 3. YouTube Music authentication
+### 2. Guided setup (recommended)
 
 ```bash
-ytmusicapi browser
+python main.py --setup
 ```
 
-Follow the prompts to create `browser.json`. You will need to paste your request headers from a browser session (Developer Tools > Network tab > any request to music.youtube.com > Copy Request Headers).
+The setup flow:
+
+- Prompts for `SPOTIFY_CLIENT_ID` (Client Secret is optional; PKCE is used if missing)
+- Starts YouTube Music auth (OAuth recommended) to create `oauth.json` or `browser.json`
+
+### 3. Manual setup (optional)
+
+**Spotify**
+
+1. Go to [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
+2. Create an app and note your **Client ID** (Client Secret is optional)
+3. Add `http://127.0.0.1:8888/callback` as a Redirect URI
+4. Create `.env` (from `.env.example`) and set `SPOTIFY_CLIENT_ID`
+
+**YouTube Music**
+
+```bash
+ytmusicapi oauth    # recommended, creates oauth.json
+# or
+ytmusicapi browser  # manual headers, creates browser.json
+```
 
 ## Usage
 
 ### Using Docker (Recommended)
 
-You can run the tool without installing Python locally using Docker. Make sure you have your `.env` and `browser.json` files ready in the project directory.
+You can run the tool without installing Python locally using Docker. Make sure you have your `.env` and `oauth.json` (recommended) or `browser.json` files ready in the project directory.
 
 ```bash
 docker build -t spotify2ytmusic .
 docker run -it --rm \
   -v $(pwd)/.env:/app/.env \
-  -v $(pwd)/browser.json:/app/browser.json \
+  -v $(pwd)/oauth.json:/app/oauth.json \
   -v $(pwd)/match_cache.db:/app/match_cache.db \
   spotify2ytmusic --help
+
+# If you use browser.json instead, mount it as /app/browser.json
 ```
 
 #### Windows (PowerShell) - Docker
@@ -86,7 +90,7 @@ docker run -it --rm \
 docker build -t spotify2ytmusic .
 docker run -it --rm `
   -v ${PWD}\.env:/app/.env `
-  -v ${PWD}\browser.json:/app/browser.json `
+  -v ${PWD}\oauth.json:/app/oauth.json `
   -v ${PWD}\match_cache.db:/app/match_cache.db `
   spotify2ytmusic --help
 ```
@@ -94,6 +98,12 @@ docker run -it --rm `
 ### Using Python
 
 ```bash
+# Guided setup (recommended)
+python main.py --setup
+
+# Quick start transfer
+python main.py --limit 50
+
 # Full transfer
 python main.py
 
@@ -135,6 +145,8 @@ python -m venv .venv
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+ytmusicapi oauth
+# or
 ytmusicapi browser
 python main.py
 ```
@@ -143,6 +155,7 @@ python main.py
 
 | Flag | Description | Default |
 |------|-------------|---------|
+| `--setup` | Guided auth setup and exit | Off |
 | `--limit N` | Process only first N songs | All |
 | `--resume` | Skip already-cached songs | Off |
 | `--dry-run` | Match only, no playlist changes | Off |
@@ -152,10 +165,16 @@ python main.py
 | `--max-retries N` | Max retry attempts | 5 |
 | `--playlist` | Spotify playlist ID or URL | None |
 | `--interactive` / `-i` | Manual review for low-confidence matches | Off |
-| `--headers PATH` | YouTube Music headers JSON path | browser.json |
+| `--headers PATH` | YouTube Music auth JSON path (browser.json or oauth.json) | Auto |
 | `--cache-path PATH` | SQLite cache file path | match_cache.db |
 | `--skipped-log PATH` | Skipped tracks log path | skipped.log |
 | `--yt-playlist NAME` | Custom YouTube Music playlist title | Auto |
+
+## Testing
+
+```bash
+python -m unittest discover -s tests
+```
 
 ## Project Structure
 

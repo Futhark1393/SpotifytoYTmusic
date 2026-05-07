@@ -1,6 +1,6 @@
 """
 YouTube Music client – wraps ytmusicapi for searching, playlist
-management, and adding tracks.
+management, and adding tracks. Supports browser.json or oauth.json.
 """
 
 import logging
@@ -13,7 +13,9 @@ from utils import Throttle, retry
 
 logger = logging.getLogger("spotify2ytmusic")
 
+DEFAULT_OAUTH_PATH = Path("oauth.json")
 DEFAULT_HEADERS_PATH = Path("browser.json")
+DEFAULT_AUTH_PATHS = (DEFAULT_OAUTH_PATH, DEFAULT_HEADERS_PATH)
 PLAYLIST_TITLE = "Spotify Liked Songs Backup"
 PLAYLIST_DESCRIPTION = (
     "Auto-generated backup of Spotify Liked Songs via spotify2ytmusic."
@@ -25,19 +27,38 @@ class YTMusicClient:
 
     def __init__(
         self,
-        headers_path: Path = DEFAULT_HEADERS_PATH,
+        auth_path: Optional[Path] = None,
         throttle_interval: float = 0.35,
     ) -> None:
-        if not headers_path.exists():
-            raise FileNotFoundError(
-                f"YouTube Music headers file not found at '{headers_path}'.\n"
-                "  Run one of these to set it up:\n"
-                "    ytmusicapi browser   (paste headers from browser DevTools)\n"
-                "    ytmusicapi oauth     (Google OAuth flow)\n"
-            )
-        self._yt = YTMusic(str(headers_path))
+        resolved_path = self._resolve_auth_path(auth_path)
+        self._yt = YTMusic(str(resolved_path))
         self._throttle = Throttle(min_interval=throttle_interval)
-        logger.info("YouTube Music client authenticated (headers: %s).", headers_path)
+        logger.info("YouTube Music client authenticated (auth: %s).", resolved_path)
+
+    @staticmethod
+    def _resolve_auth_path(auth_path: Optional[Path]) -> Path:
+        if auth_path is not None:
+            if auth_path.exists():
+                return auth_path
+            raise FileNotFoundError(
+                f"YouTube Music auth file not found at '{auth_path}'.\n"
+                "  Run one of these to set it up:\n"
+                "    ytmusicapi oauth     (recommended, creates oauth.json)\n"
+                "    ytmusicapi browser   (manual headers, creates browser.json)\n"
+                "  Or run: python main.py --setup\n"
+            )
+
+        for candidate in DEFAULT_AUTH_PATHS:
+            if candidate.exists():
+                return candidate
+
+        raise FileNotFoundError(
+            "No YouTube Music auth file found.\n"
+            "  Run one of these to set it up:\n"
+            "    ytmusicapi oauth     (recommended, creates oauth.json)\n"
+            "    ytmusicapi browser   (manual headers, creates browser.json)\n"
+            "  Or run: python main.py --setup\n"
+        )
 
     @retry(max_attempts=5, base_delay=1.0, max_delay=30.0)
     def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:

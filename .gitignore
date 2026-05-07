@@ -2,6 +2,7 @@
 .env
 headers.json
 browser.json
+oauth.json
 
 # Cache & logs
 match_cache.db

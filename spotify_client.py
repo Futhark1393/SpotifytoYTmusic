@@ -1,6 +1,6 @@
 """
-Spotify client – authenticates via OAuth and fetches all Liked Songs
-with automatic pagination and rate-limit handling.
+Spotify client – authenticates via OAuth (PKCE supported) and fetches all
+Liked Songs with automatic pagination and rate-limit handling.
 """
 
 import logging
@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import spotipy
-from spotipy.oauth2 import SpotifyOAuth
+from spotipy.oauth2 import SpotifyOAuth, SpotifyPKCE
 
 from utils import Timer, retry
 
@@ -49,27 +49,37 @@ class SpotifyClient:
 
         Required env vars:
             SPOTIFY_CLIENT_ID
-            SPOTIFY_CLIENT_SECRET
-            SPOTIFY_REDIRECT_URI
+        Optional env vars:
+            SPOTIFY_CLIENT_SECRET (if set, uses standard OAuth)
+            SPOTIFY_REDIRECT_URI (defaults to http://127.0.0.1:8888/callback)
         """
         client_id = os.getenv("SPOTIFY_CLIENT_ID")
-        client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
-        redirect_uri = os.getenv("SPOTIFY_REDIRECT_URI", "http://localhost:8888/callback")
+        client_secret = os.getenv("SPOTIFY_CLIENT_SECRET", "")
+        redirect_uri = os.getenv("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8888/callback")
 
-        if not client_id or not client_secret:
+        if not client_id or client_id == "your_client_id_here":
             raise EnvironmentError(
-                "SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET must be set. "
-                "See .env.example for details."
+                "SPOTIFY_CLIENT_ID must be set. Run 'python main.py --setup' "
+                "or update .env."
             )
 
-        auth_manager = SpotifyOAuth(
-            client_id=client_id,
-            client_secret=client_secret,
-            redirect_uri=redirect_uri,
-            scope="user-library-read playlist-read-private playlist-read-collaborative",
-        )
+        if client_secret in ("", "your_client_secret_here"):
+            auth_manager = SpotifyPKCE(
+                client_id=client_id,
+                redirect_uri=redirect_uri,
+                scope="user-library-read playlist-read-private playlist-read-collaborative",
+            )
+            logger.info("Spotify client authenticated with PKCE.")
+        else:
+            auth_manager = SpotifyOAuth(
+                client_id=client_id,
+                client_secret=client_secret,
+                redirect_uri=redirect_uri,
+                scope="user-library-read playlist-read-private playlist-read-collaborative",
+            )
+            logger.info("Spotify client authenticated with client secret.")
         self._sp = spotipy.Spotify(auth_manager=auth_manager)
-        logger.info("Spotify client authenticated successfully.")
+        logger.info("Spotify client ready.")
 
     # ------------------------------------------------------------------
 

@@ -2,9 +2,11 @@
 
 Goal: transfer Spotify liked songs or a Spotify playlist to YouTube Music.
 
+Recommended auth: Spotify PKCE (Client Secret optional) + YouTube Music OAuth (oauth.json).
+
 Inputs
-- .env: SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REDIRECT_URI
-- browser.json: YouTube Music headers (override with --headers)
+- .env: SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET (optional), SPOTIFY_REDIRECT_URI (optional)
+- oauth.json or browser.json: YouTube Music auth (override with --headers)
 
 Outputs
 - match_cache.db: cached search results
@@ -12,7 +14,7 @@ Outputs
 - YouTube Music playlist: created or reused
 
 Flow
-1. preflight_check ensures creds and headers are present
+1. preflight_check ensures Spotify ID + YT auth are present (or directs to --setup)
 2. SpotifyClient fetches tracks
 3. TrackMatcher searches YouTube Music and scores matches
 4. MatchCache stores video IDs or SKIP sentinel
@@ -20,6 +22,6 @@ Flow
 6. Summary table is printed
 
 Key flags
---limit, --resume, --dry-run, --threshold, --workers,
+--setup, --limit, --resume, --dry-run, --threshold, --workers,
 --playlist, --interactive, --yt-playlist,
 --headers, --cache-path, --skipped-log

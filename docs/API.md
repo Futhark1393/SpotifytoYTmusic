@@ -4,8 +4,10 @@ main.py
 - setup_rich_logging(verbose): configure logging with Rich
 - build_parser(): define CLI flags
 - extract_playlist_id(url_or_id): parse Spotify playlist ID
-- preflight_check(headers_path): validate .env and headers JSON
-- interactive_setup(): prompt and write Spotify credentials
+- run_setup(): guided setup for Spotify + YouTube Music auth
+- setup_spotify_credentials(): prompt and write Spotify credentials (PKCE supported)
+- setup_ytmusic_auth(): guide YouTube Music auth (oauth.json or browser.json)
+- preflight_check(headers_arg): validate Spotify ID and YT auth JSON
 - log_skipped(track, reason): append a line to skipped log
 - _match_one(track, matcher, cache, resume): worker for fuzzy matching
 - run(args): orchestration pipeline

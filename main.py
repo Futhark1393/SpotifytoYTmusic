@@ -3,6 +3,7 @@
 spotify2ytmusic – Transfer Spotify Liked Songs to YouTube Music.
 
 Usage:
+    python main.py --setup                 # guided auth setup
     python main.py                         # full transfer
     python main.py --limit 50              # process first 50 songs
     python main.py --resume                # skip already-cached songs
@@ -10,9 +11,8 @@ Usage:
 
 Setup:
     1. pip install -r requirements.txt
-    2. Copy .env.example to .env and fill in your Spotify credentials.
-    3. Run `ytmusicapi browser` to create browser.json for YouTube Music.
-    4. python main.py
+    2. python main.py --setup              # Spotify PKCE + YouTube Music OAuth
+    3. python main.py
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import argparse
 import logging
 import os
 import re
+import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -93,6 +94,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="spotify2ytmusic",
         description="Transfer your Spotify Liked Songs to YouTube Music.",
     )
+    p.add_argument("--setup", action="store_true",
+                   help="Run guided setup for Spotify + YouTube Music auth and exit.")
     p.add_argument("--limit", type=int, default=None,
                    help="Process only the first N liked songs.")
     p.add_argument("--resume", action="store_true",
@@ -111,8 +114,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Spotify Playlist ID or URL to transfer instead of Liked Songs.")
     p.add_argument("--interactive", "-i", action="store_true",
                    help="Prompt manually for songs that fail the threshold match.")
-    p.add_argument("--headers", type=str, default="browser.json",
-                   help="Path to YouTube Music headers JSON (default=browser.json).")
+    p.add_argument("--headers", type=str, default=None,
+                   help="Path to YouTube Music auth JSON (browser.json or oauth.json). Auto-detect if not set.")
     p.add_argument("--cache-path", type=str, default="match_cache.db",
                    help="Path to SQLite cache (default=match_cache.db).")
     p.add_argument("--skipped-log", type=str, default="skipped.log",
@@ -149,27 +152,25 @@ def log_skipped(track: SpotifyTrack, reason: str) -> None:
 
 ENV_FILE = Path(".env")
 REDIRECT_URI_DEFAULT = "http://127.0.0.1:8888/callback"
+YT_OAUTH_FILE = Path("oauth.json")
+YT_BROWSER_FILE = Path("browser.json")
 
 
 def _needs_spotify_setup() -> bool:
     """Return True if Spotify credentials are missing or still placeholders."""
     cid = os.getenv("SPOTIFY_CLIENT_ID", "")
-    csec = os.getenv("SPOTIFY_CLIENT_SECRET", "")
-    placeholders = {"", "your_client_id_here", "your_client_secret_here"}
-    return cid in placeholders or csec in placeholders
+    placeholders = {"", "your_client_id_here"}
+    return cid in placeholders
 
 
-def _write_env(client_id: str, client_secret: str, redirect_uri: str) -> None:
-    """Write (or overwrite) the .env file with the supplied credentials."""
-    content = (
-        "# Spotify API Credentials\n"
-        "# Get these from https://developer.spotify.com/dashboard\n"
-        f"SPOTIFY_CLIENT_ID={client_id}\n"
-        f"SPOTIFY_CLIENT_SECRET={client_secret}\n"
-        f"SPOTIFY_REDIRECT_URI={redirect_uri}\n"
-    )
-    ENV_FILE.write_text(content, encoding="utf-8")
-    ENV_FILE.chmod(0o600)
+def _write_env(client_id: str, client_secret: Optional[str], redirect_uri: str) -> None:
+    """Write or update Spotify credentials in .env."""
+    _update_env_value("SPOTIFY_CLIENT_ID", client_id)
+    if client_secret is None:
+        _update_env_value("SPOTIFY_CLIENT_SECRET", "")
+    else:
+        _update_env_value("SPOTIFY_CLIENT_SECRET", client_secret)
+    _update_env_value("SPOTIFY_REDIRECT_URI", redirect_uri)
 
 
 def _update_env_value(key: str, value: str) -> None:
@@ -190,103 +191,166 @@ def _update_env_value(key: str, value: str) -> None:
     ENV_FILE.chmod(0o600)
 
 
-def interactive_setup() -> None:
-    """Run an interactive wizard to collect Spotify API credentials.
+def setup_spotify_credentials() -> None:
+    """Run a short wizard to collect Spotify API credentials (PKCE supported)."""
+    if not _needs_spotify_setup():
+        console.print("[green]Spotify Client ID already configured. Skipping.[/green]")
+        return
 
-    Called automatically on first run when .env is missing or incomplete.
-    """
     console.print(
         Panel(
-            "[bold yellow]First-time setup detected![/bold yellow]\n\n"
-            "You need Spotify API credentials to use this tool.\n"
-            "Get them from [bold cyan][link=https://developer.spotify.com/dashboard]"
-            "developer.spotify.com/dashboard[/link][/bold cyan]\n\n"
-            "[dim]1. Create an app (or use an existing one)\n"
-            "2. Copy your Client ID and Client Secret\n"
-            "3. Add [bold]http://127.0.0.1:8888/callback[/bold] as a Redirect URI[/dim]",
-            title="[bold green]⚙  Setup Wizard[/bold green]",
+            "Spotify setup (PKCE supported):\n"
+            "1. Create an app in the Spotify Developer Dashboard\n"
+            f"2. Add redirect URI: {REDIRECT_URI_DEFAULT}\n"
+            "3. Paste your Client ID below\n"
+            "Client Secret is optional (PKCE is used if omitted).",
+            title="[bold green]Setup: Spotify[/bold green]",
             border_style="green",
             padding=(1, 2),
         )
     )
 
-    # Collect Client ID
     while True:
         client_id = console.input("[bold cyan]  Spotify Client ID:[/bold cyan] ").strip()
         if client_id:
             break
         console.print("  [red]Client ID cannot be empty.[/red]")
 
-    # Collect Client Secret
-    while True:
-        client_secret = console.input("[bold cyan]  Spotify Client Secret:[/bold cyan] ").strip()
-        if client_secret:
-            break
-        console.print("  [red]Client Secret cannot be empty.[/red]")
+    client_secret = console.input(
+        "[bold cyan]  Spotify Client Secret[/bold cyan] [dim](optional, Enter to skip):[/dim] "
+    ).strip()
+    if not client_secret:
+        client_secret = None
 
-    # Redirect URI (offer default)
     redirect_uri = console.input(
         f"[bold cyan]  Redirect URI[/bold cyan] [dim](Enter for {REDIRECT_URI_DEFAULT}):[/dim] "
     ).strip()
     if not redirect_uri:
         redirect_uri = REDIRECT_URI_DEFAULT
 
-    # Write to .env
     _write_env(client_id, client_secret, redirect_uri)
-
-    # Reload env vars so the rest of the app sees them
     load_dotenv(override=True)
 
     console.print()
+    console.print("[bold green]  Credentials saved to .env[/bold green]\n")
+
+
+def _run_ytmusic_setup(mode: str) -> bool:
+    try:
+        subprocess.run(["ytmusicapi", mode], check=True)
+    except FileNotFoundError:
+        console.print("[red]ytmusicapi CLI not found. Run: pip install -r requirements.txt[/red]")
+        return False
+    except subprocess.CalledProcessError as exc:
+        console.print(f"[red]ytmusicapi {mode} failed (exit {exc.returncode}).[/red]")
+        return False
+    return True
+
+
+def setup_ytmusic_auth() -> Optional[Path]:
+    """Guide the user through YouTube Music auth setup."""
+    existing = _resolve_yt_auth_path(None)
+    if existing and existing.exists():
+        console.print(f"[green]Found existing YouTube Music auth: {existing}[/green]")
+        return existing
+
     console.print(
-        "[bold green]  ✓  Credentials saved to .env[/bold green]\n"
+        Panel(
+            "YouTube Music auth options:\n"
+            "1) OAuth (recommended) – no header copy, creates oauth.json\n"
+            "2) Browser headers – manual copy, creates browser.json",
+            title="[bold green]Setup: YouTube Music[/bold green]",
+            border_style="green",
+            padding=(1, 2),
+        )
     )
+
+    choice = console.input("[bold cyan]  Choose 1 or 2[/bold cyan] [dim](default: 1):[/dim] ").strip() or "1"
+    if choice == "2":
+        if not _run_ytmusic_setup("browser"):
+            return None
+        if not YT_BROWSER_FILE.exists():
+            console.print("[red]browser.json was not created. Try running ytmusicapi browser again.[/red]")
+            return None
+        return YT_BROWSER_FILE
+
+    if not _run_ytmusic_setup("oauth"):
+        return None
+    if not YT_OAUTH_FILE.exists():
+        console.print("[red]oauth.json was not created. Try running ytmusicapi oauth again.[/red]")
+        return None
+    return YT_OAUTH_FILE
+
+
+def run_setup() -> bool:
+    """Run guided setup for Spotify and YouTube Music auth."""
+    console.print(
+        Panel(
+            "Guided setup will configure Spotify and YouTube Music auth.\n"
+            "This will create/update .env and generate oauth.json or browser.json.",
+            title="[bold green]Setup Wizard[/bold green]",
+            border_style="green",
+            padding=(1, 2),
+        )
+    )
+
+    setup_spotify_credentials()
+    yt_auth_path = setup_ytmusic_auth()
+    if not yt_auth_path:
+        console.print("[red]Setup incomplete. Run 'python main.py --setup' again.[/red]")
+        return False
+
+    console.print("[bold green]Setup complete. Run 'python main.py' to start.[/bold green]")
+    return True
 
 
 # ---------------------------------------------------------------------------
 # Preflight checks
 # ---------------------------------------------------------------------------
 
-def preflight_check(headers_path: Path) -> None:
-    """Validate all prerequisites.
+def _resolve_yt_auth_path(headers_arg: Optional[str]) -> Optional[Path]:
+    if headers_arg:
+        return Path(headers_arg)
+    if YT_OAUTH_FILE.exists():
+        return YT_OAUTH_FILE
+    if YT_BROWSER_FILE.exists():
+        return YT_BROWSER_FILE
+    return None
 
-    If Spotify credentials are missing, launches the interactive setup wizard
-    instead of just exiting.
-    """
-    # --- Spotify credentials ---
-    if _needs_spotify_setup():
-        interactive_setup()
 
-    # Re-check after wizard (in case user Ctrl-C'd or entered bad values)
+def preflight_check(headers_arg: Optional[str]) -> Path:
+    """Validate all prerequisites and return the resolved YT auth path."""
     errors: list[str] = []
-    client_id = os.getenv("SPOTIFY_CLIENT_ID", "")
-    client_secret = os.getenv("SPOTIFY_CLIENT_SECRET", "")
-    if not client_id or client_id == "your_client_id_here":
+    if _needs_spotify_setup():
         errors.append(
-            "[bold]SPOTIFY_CLIENT_ID[/bold] is still missing in .env\n"
-            "  → [link=https://developer.spotify.com/dashboard]developer.spotify.com/dashboard[/link]"
-        )
-    if not client_secret or client_secret == "your_client_secret_here":
-        errors.append(
-            "[bold]SPOTIFY_CLIENT_SECRET[/bold] is still missing in .env\n"
-            "  → Dashboard → Your App → Settings → View client secret"
+            "[bold]SPOTIFY_CLIENT_ID[/bold] is missing in .env\n"
+            "  → Run: [bold cyan]python main.py --setup[/bold cyan]"
         )
 
-    # --- browser.json ---
-    if not headers_path.exists():
-        errors.append(
-            f"[bold]{headers_path}[/bold] not found\n"
-            "  → Run: [bold cyan]ytmusicapi browser[/bold cyan]\n"
-            "  → Then paste headers from [link=https://music.youtube.com]music.youtube.com[/link] DevTools (F12 → Network → any POST request)"
-        )
+    yt_auth_path = _resolve_yt_auth_path(headers_arg)
+    if yt_auth_path is None or not yt_auth_path.exists():
+        if headers_arg:
+            errors.append(
+                f"[bold]{headers_arg}[/bold] not found\n"
+                "  → Run: [bold cyan]ytmusicapi oauth[/bold cyan] (recommended)\n"
+                "  → Or: [bold cyan]ytmusicapi browser[/bold cyan]\n"
+                "  → Or: [bold cyan]python main.py --setup[/bold cyan]"
+            )
+        else:
+            errors.append(
+                "No YouTube Music auth file found (oauth.json or browser.json)\n"
+                "  → Run: [bold cyan]python main.py --setup[/bold cyan]"
+            )
 
     if errors:
         msg = "\n\n".join(f"[red]✗[/red]  {e}" for e in errors)
-        console.print(Panel(msg, title="[red bold]Setup Incomplete[/red bold]",
+        console.print(Panel(msg, title="[red bold]Setup Required[/red bold]",
                             border_style="red", padding=(1, 2)))
         sys.exit(1)
 
     console.print("[bold green]✓[/bold green]  All credentials verified — let's go!\n")
+    assert yt_auth_path is not None
+    return yt_auth_path
 
 
 # ---------------------------------------------------------------------------
@@ -344,8 +408,12 @@ def run(args: argparse.Namespace) -> None:
 
     # ---- 0. Banner + preflight ----
     console.print(BANNER)
-    headers_path = Path(args.headers)
-    preflight_check(headers_path)
+    if args.setup:
+        if not run_setup():
+            sys.exit(1)
+        return
+
+    yt_auth_path = preflight_check(args.headers)
 
     overall_timer = Timer("Total")
     overall_timer.__enter__()
@@ -381,7 +449,7 @@ def run(args: argparse.Namespace) -> None:
 
     # ---- 2. Initialise YouTube Music & matcher ----
     with console.status("[bold green]Connecting to YouTube Music…[/bold green]"):
-        yt = YTMusicClient(headers_path=headers_path)
+        yt = YTMusicClient(auth_path=yt_auth_path)
         matcher = TrackMatcher(yt, threshold=args.threshold)
         cache = MatchCache(db_path=Path(args.cache_path))
 
