@@ -111,6 +111,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Spotify Playlist ID or URL to transfer instead of Liked Songs.")
     p.add_argument("--interactive", "-i", action="store_true",
                    help="Prompt manually for songs that fail the threshold match.")
+    p.add_argument("--headers", type=str, default="browser.json",
+                   help="Path to YouTube Music headers JSON (default=browser.json).")
+    p.add_argument("--cache-path", type=str, default="match_cache.db",
+                   help="Path to SQLite cache (default=match_cache.db).")
+    p.add_argument("--skipped-log", type=str, default="skipped.log",
+                   help="Path for skipped-log output (default=skipped.log).")
+    p.add_argument("--yt-playlist", type=str, default=None,
+                   help="Custom YouTube Music playlist title.")
     return p
 
 def extract_playlist_id(url_or_id: str) -> str:
@@ -239,7 +247,7 @@ def interactive_setup() -> None:
 # Preflight checks
 # ---------------------------------------------------------------------------
 
-def preflight_check() -> None:
+def preflight_check(headers_path: Path) -> None:
     """Validate all prerequisites.
 
     If Spotify credentials are missing, launches the interactive setup wizard
@@ -265,9 +273,9 @@ def preflight_check() -> None:
         )
 
     # --- browser.json ---
-    if not Path("browser.json").exists():
+    if not headers_path.exists():
         errors.append(
-            "[bold]browser.json[/bold] not found\n"
+            f"[bold]{headers_path}[/bold] not found\n"
             "  → Run: [bold cyan]ytmusicapi browser[/bold cyan]\n"
             "  → Then paste headers from [link=https://music.youtube.com]music.youtube.com[/link] DevTools (F12 → Network → any POST request)"
         )
@@ -336,7 +344,8 @@ def run(args: argparse.Namespace) -> None:
 
     # ---- 0. Banner + preflight ----
     console.print(BANNER)
-    preflight_check()
+    headers_path = Path(args.headers)
+    preflight_check(headers_path)
 
     overall_timer = Timer("Total")
     overall_timer.__enter__()
@@ -349,7 +358,8 @@ def run(args: argparse.Namespace) -> None:
         pl_id = extract_playlist_id(args.playlist)
         with console.status("[bold green]Fetching Playlist name…[/bold green]"):
             sp_playlist_name = sp.get_playlist_name(pl_id)
-            yt_playlist_name = f"{sp_playlist_name} (Backup)"
+            default_yt_playlist_name = f"{sp_playlist_name} (Backup)"
+            yt_playlist_name = args.yt_playlist or default_yt_playlist_name
         
         with console.status(f"[bold green]Fetching tracks from '{sp_playlist_name}'…[/bold green]") as status:
             tracks = sp.fetch_playlist_tracks(pl_id, limit=args.limit)
@@ -357,7 +367,8 @@ def run(args: argparse.Namespace) -> None:
         
         console.print(f"  [cyan]🎵  {len(tracks)} songs fetched from playlist '{sp_playlist_name}'[/cyan]\n")
     else:
-        yt_playlist_name = "Spotify Liked Songs Backup"
+        default_yt_playlist_name = "Spotify Liked Songs Backup"
+        yt_playlist_name = args.yt_playlist or default_yt_playlist_name
         with console.status("[bold green]Fetching your Liked Songs from Spotify…[/bold green]") as status:
             tracks = sp.fetch_liked_songs(limit=args.limit)
             status.update(f"[bold green]Fetched {len(tracks)} songs![/bold green]")
@@ -370,13 +381,16 @@ def run(args: argparse.Namespace) -> None:
 
     # ---- 2. Initialise YouTube Music & matcher ----
     with console.status("[bold green]Connecting to YouTube Music…[/bold green]"):
-        yt = YTMusicClient()
+        yt = YTMusicClient(headers_path=headers_path)
         matcher = TrackMatcher(yt, threshold=args.threshold)
-        cache = MatchCache()
+        cache = MatchCache(db_path=Path(args.cache_path))
 
     console.print(f"  [cyan]📺  YouTube Music ready  |  Match threshold: {args.threshold:.0f}%  |  Workers: {args.workers}[/cyan]\n")
 
     # ---- 3. Match songs (parallel) ----
+    global SKIPPED_LOG
+    SKIPPED_LOG = Path(args.skipped_log)
+
     matched_ids: list[str] = []
     added_set: set[str] = set()
     stats = {"matched": 0, "skipped": 0, "cached": 0, "errors": 0}

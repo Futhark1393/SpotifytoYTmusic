@@ -22,6 +22,10 @@ A production-ready CLI tool that transfers your **Liked Songs** from Spotify to 
 - **Dry-run mode** – Test matching without modifying playlists
 - **Progress bar** – Real-time progress via `tqdm`
 - **Skipped log** – All unmatched/failed tracks logged to `skipped.log`
+- **Playlist import** – Transfer a Spotify playlist by ID/URL (`--playlist`)
+- **Interactive review** – Manually pick matches below threshold (`--interactive`)
+- **Configurable paths** – Custom headers, cache, and skipped log paths
+- **Custom playlist title** – Override the YouTube Music playlist name
 
 ## Setup
 
@@ -76,6 +80,17 @@ docker run -it --rm \
   spotify2ytmusic --help
 ```
 
+#### Windows (PowerShell) - Docker
+
+```powershell
+docker build -t spotify2ytmusic .
+docker run -it --rm `
+  -v ${PWD}\.env:/app/.env `
+  -v ${PWD}\browser.json:/app/browser.json `
+  -v ${PWD}\match_cache.db:/app/match_cache.db `
+  spotify2ytmusic --help
+```
+
 ### Using Python
 
 ```bash
@@ -99,6 +114,29 @@ python main.py --threshold 70
 
 # Adjust concurrency
 python main.py --workers 3
+
+# Transfer a Spotify playlist (ID or URL)
+python main.py --playlist <playlist-id-or-url>
+
+# Interactive match review
+python main.py --interactive
+
+# Custom YouTube Music playlist title
+python main.py --yt-playlist "My Spotify Backup"
+
+# Custom paths (headers, cache, skipped log)
+python main.py --headers ./browser.json --cache-path ./match_cache.db --skipped-log ./skipped.log
+```
+
+### Windows (PowerShell) - Python
+
+```powershell
+python -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+ytmusicapi browser
+python main.py
 ```
 
 ### CLI Options
@@ -112,6 +150,12 @@ python main.py --workers 3
 | `--threshold N` | Min fuzzy-match score (0-100) | 80 |
 | `--workers N` | Concurrent YouTube search workers | 5 |
 | `--max-retries N` | Max retry attempts | 5 |
+| `--playlist` | Spotify playlist ID or URL | None |
+| `--interactive` / `-i` | Manual review for low-confidence matches | Off |
+| `--headers PATH` | YouTube Music headers JSON path | browser.json |
+| `--cache-path PATH` | SQLite cache file path | match_cache.db |
+| `--skipped-log PATH` | Skipped tracks log path | skipped.log |
+| `--yt-playlist NAME` | Custom YouTube Music playlist title | Auto |
 
 ## Project Structure
 
@@ -124,8 +168,15 @@ python main.py --workers 3
 ├── utils.py            # Retry decorator, throttle, text normalization
 ├── requirements.txt    # Python dependencies
 ├── .env.example        # Template for Spotify credentials
+├── docs/               # Token-saver docs (context, API, Windows)
 └── README.md           # This file
 ```
+
+## Docs (Token-Saver)
+
+- [docs/CONTEXT.md](docs/CONTEXT.md)
+- [docs/API.md](docs/API.md)
+- [docs/WINDOWS.md](docs/WINDOWS.md)
 
 ## Output
 
