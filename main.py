@@ -156,6 +156,16 @@ YT_OAUTH_FILE = Path("oauth.json")
 YT_BROWSER_FILE = Path("browser.json")
 
 
+def _abort_env_permission() -> None:
+    console.print("[red]Permission denied while updating .env.[/red]")
+    console.print(
+        "[yellow]Fix:[/yellow] remove the Read-only attribute, close programs using .env, "
+        "or run the terminal as Administrator."
+    )
+    console.print(f"[dim]Path: {ENV_FILE.resolve()}[/dim]")
+    raise SystemExit(1)
+
+
 def _needs_spotify_setup() -> bool:
     """Return True if Spotify credentials are missing or still placeholders."""
     cid = os.getenv("SPOTIFY_CLIENT_ID", "")
@@ -176,19 +186,49 @@ def _write_env(client_id: str, client_secret: Optional[str], redirect_uri: str) 
 def _update_env_value(key: str, value: str) -> None:
     """Update a single key in the existing .env file, or append it."""
     if ENV_FILE.exists():
-        text = ENV_FILE.read_text(encoding="utf-8")
+        try:
+            text = ENV_FILE.read_text(encoding="utf-8")
+        except PermissionError:
+            try:
+                ENV_FILE.chmod(0o600)
+                text = ENV_FILE.read_text(encoding="utf-8")
+            except Exception:
+                _abort_env_permission()
         pattern = rf"^{re.escape(key)}=.*$"
         if re.search(pattern, text, flags=re.MULTILINE):
             text = re.sub(pattern, f"{key}={value}", text, flags=re.MULTILINE)
-            ENV_FILE.write_text(text, encoding="utf-8")
-            ENV_FILE.chmod(0o600)
+            try:
+                ENV_FILE.write_text(text, encoding="utf-8")
+            except PermissionError:
+                try:
+                    ENV_FILE.chmod(0o600)
+                    ENV_FILE.write_text(text, encoding="utf-8")
+                except Exception:
+                    _abort_env_permission()
+            try:
+                ENV_FILE.chmod(0o600)
+            except PermissionError:
+                pass
             return
         # key not found – append
         text += f"\n{key}={value}\n"
-        ENV_FILE.write_text(text, encoding="utf-8")
+        try:
+            ENV_FILE.write_text(text, encoding="utf-8")
+        except PermissionError:
+            try:
+                ENV_FILE.chmod(0o600)
+                ENV_FILE.write_text(text, encoding="utf-8")
+            except Exception:
+                _abort_env_permission()
     else:
-        ENV_FILE.write_text(f"{key}={value}\n", encoding="utf-8")
-    ENV_FILE.chmod(0o600)
+        try:
+            ENV_FILE.write_text(f"{key}={value}\n", encoding="utf-8")
+        except PermissionError:
+            _abort_env_permission()
+    try:
+        ENV_FILE.chmod(0o600)
+    except PermissionError:
+        pass
 
 
 def setup_spotify_credentials() -> None:

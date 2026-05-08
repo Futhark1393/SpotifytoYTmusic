@@ -29,28 +29,41 @@ A production-ready CLI tool that transfers your **Liked Songs** from Spotify to 
 - **Configurable paths** – Custom headers, cache, and skipped log paths
 - **Custom playlist title** – Override the YouTube Music playlist name
 
-## Setup
+## Quick Start
 
 Recommended auth path: Spotify PKCE (no Client Secret required) + YouTube Music OAuth (oauth.json).
 
-### 1. Install dependencies
+### Windows (PowerShell)
 
-```bash
+```powershell
+git clone https://github.com/Futhark1393/SpotifytoYTmusic.git
+cd SpotifytoYTmusic
+python -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+python main.py --setup
+python main.py
 ```
 
-### 2. Guided setup (recommended)
+### Linux/macOS
 
 ```bash
+git clone https://github.com/Futhark1393/SpotifytoYTmusic.git
+cd SpotifytoYTmusic
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 python main.py --setup
+python main.py
 ```
 
-The setup flow:
+The `--setup` flow:
 
-- Prompts for `SPOTIFY_CLIENT_ID` (Client Secret is optional; PKCE is used if missing)
+- Prompts for `SPOTIFY_CLIENT_ID` (Client Secret optional; PKCE used if missing)
 - Starts YouTube Music auth (OAuth recommended) to create `oauth.json` or `browser.json`
 
-### 3. Manual setup (optional)
+### Manual setup (optional)
 
 **Spotify**
 
@@ -138,19 +151,6 @@ python main.py --yt-playlist "My Spotify Backup"
 python main.py --headers ./browser.json --cache-path ./match_cache.db --skipped-log ./skipped.log
 ```
 
-### Windows (PowerShell) - Python
-
-```powershell
-python -m venv .venv
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-ytmusicapi oauth
-# or
-ytmusicapi browser
-python main.py
-```
-
 ### CLI Options
 
 | Flag | Description | Default |
@@ -175,6 +175,17 @@ python main.py
 ```bash
 python -m unittest discover -s tests
 ```
+
+## Troubleshooting
+
+**Permission denied: .env (Windows)**
+If setup fails with `PermissionError: [Errno 13] Permission denied: '.env'`:
+
+```powershell
+attrib -R .env
+```
+
+Then re-run `python main.py --setup`. Also make sure no editor or shell is locking the file, or run PowerShell as Administrator.
 
 ## Project Structure
 
