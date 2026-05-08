@@ -37,3 +37,4 @@ docker run -it --rm `
 Notes
 - If your headers file lives elsewhere, pass --headers "C:\path\to\browser.json".
 - If execution policy blocks activation, use the temporary policy shown above.
+- Spotify may require Premium for the app owner to access saved tracks and playlists.

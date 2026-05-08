@@ -2,6 +2,8 @@
 
 Goal: transfer Spotify liked songs or a Spotify playlist to YouTube Music.
 
+Note: Spotify may require Premium for the app owner to access saved tracks and playlists.
+
 Recommended auth: Spotify PKCE (Client Secret optional) + YouTube Music OAuth (oauth.json).
 
 Inputs
@@ -25,3 +27,4 @@ Key flags
 --setup, --limit, --resume, --dry-run, --threshold, --workers,
 --playlist, --interactive, --yt-playlist,
 --headers, --cache-path, --skipped-log
+--max-retries (caps retry attempts)

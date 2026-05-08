@@ -47,8 +47,8 @@ from rich.text import Text
 
 from cache import SKIP_SENTINEL, MatchCache
 from matcher import MatchResult, TrackMatcher
-from spotify_client import SpotifyClient, SpotifyTrack
-from utils import Timer
+from spotify_client import SpotifyClient, SpotifyPremiumRequiredError, SpotifyTrack
+from utils import Timer, set_retry_cap
 from ytmusic_client import YTMusicClient, YTMusicAuthError
 
 console = Console()
@@ -109,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workers", type=int, default=5,
                    help="Max concurrent YouTube search workers (default=5).")
     p.add_argument("--max-retries", type=int, default=5,
-                   help="Max retry attempts for transient errors (default=5).")
+                   help="Cap retry attempts for transient errors (default=5).")
     p.add_argument("--playlist", type=str, default=None,
                    help="Spotify Playlist ID or URL to transfer instead of Liked Songs.")
     p.add_argument("--interactive", "-i", action="store_true",
@@ -129,7 +129,7 @@ def extract_playlist_id(url_or_id: str) -> str:
     import urllib.parse
     if "spotify.com" in url_or_id:
         path = urllib.parse.urlparse(url_or_id).path
-        return path.split("/")[-1]
+        return path.rstrip("/").split("/")[-1]
     return url_or_id
 
 
@@ -287,10 +287,10 @@ def _run_ytmusic_setup(mode: str) -> bool:
     return True
 
 
-def setup_ytmusic_auth() -> Optional[Path]:
+def setup_ytmusic_auth(force: bool = False) -> Optional[Path]:
     """Guide the user through YouTube Music auth setup."""
     existing = _resolve_yt_auth_path(None)
-    if existing and existing.exists():
+    if not force and existing and existing.exists():
         console.print(f"[green]Found existing YouTube Music auth: {existing}[/green]")
         return existing
 
@@ -356,7 +356,11 @@ def run_setup() -> bool:
     )
 
     setup_spotify_credentials()
-    yt_auth_path = setup_ytmusic_auth()
+    existing_auth = _resolve_yt_auth_path(None)
+    force_yt_auth = False
+    if existing_auth and existing_auth.exists():
+        force_yt_auth = _ask_new_user_setup()
+    yt_auth_path = setup_ytmusic_auth(force=force_yt_auth)
     if not yt_auth_path:
         console.print("[red]Setup incomplete. Run 'python main.py --setup' again.[/red]")
         return False
@@ -403,7 +407,7 @@ def preflight_check(headers_arg: Optional[str]) -> Path:
         browser_exists = YT_BROWSER_FILE.exists()
         if oauth_exists or browser_exists:
             if _ask_new_user_setup():
-                yt_auth_path = setup_ytmusic_auth()
+                yt_auth_path = setup_ytmusic_auth(force=True)
                 if yt_auth_path is None or not yt_auth_path.exists():
                     errors.append(
                         "YouTube Music setup did not complete.\n"
@@ -454,6 +458,9 @@ def _match_one(
     """Attempt to match a single Spotify track on YouTube Music."""
     key = track.search_key
 
+    if resume and cache.contains(key):
+        return (track, None, "resumed", [])
+
     cached = cache.get(key)
     if cached is not None:
         if cached == SKIP_SENTINEL:
@@ -464,9 +471,6 @@ def _match_one(
             "cached",
             []
         )
-
-    if resume and cache.contains(key):
-        return (track, None, "resumed", [])
 
     try:
         result, candidates = matcher.find_best_match(key)
@@ -512,24 +516,54 @@ def run(args: argparse.Namespace) -> None:
 
     if args.playlist:
         pl_id = extract_playlist_id(args.playlist)
-        with console.status("[bold green]Fetching Playlist name…[/bold green]"):
-            sp_playlist_name = sp.get_playlist_name(pl_id)
-            default_yt_playlist_name = f"{sp_playlist_name} (Backup)"
-            yt_playlist_name = args.yt_playlist or default_yt_playlist_name
-        
-        with console.status(f"[bold green]Fetching tracks from '{sp_playlist_name}'…[/bold green]") as status:
-            tracks = sp.fetch_playlist_tracks(pl_id, limit=args.limit)
-            status.update(f"[bold green]Fetched {len(tracks)} songs![/bold green]")
-        
-        console.print(f"  [cyan]🎵  {len(tracks)} songs fetched from playlist '{sp_playlist_name}'[/cyan]\n")
+        try:
+            with console.status("[bold green]Fetching Playlist name…[/bold green]"):
+                sp_playlist_name = sp.get_playlist_name(pl_id)
+                default_yt_playlist_name = f"{sp_playlist_name} (Backup)"
+                yt_playlist_name = args.yt_playlist or default_yt_playlist_name
+
+            with console.status(f"[bold green]Fetching tracks from '{sp_playlist_name}'…[/bold green]") as status:
+                tracks = sp.fetch_playlist_tracks(pl_id, limit=args.limit)
+                status.update(f"[bold green]Fetched {len(tracks)} songs![/bold green]")
+
+            console.print(f"  [cyan]🎵  {len(tracks)} songs fetched from playlist '{sp_playlist_name}'[/cyan]\n")
+        except SpotifyPremiumRequiredError as exc:
+            console.print(
+                Panel(
+                    str(exc),
+                    title="[red bold]Spotify Premium Required[/red bold]",
+                    border_style="red",
+                    padding=(1, 2),
+                )
+            )
+            console.print(
+                "[yellow]Tip:[/yellow] Use a Premium account to create the Spotify app, "
+                "update SPOTIFY_CLIENT_ID, then re-run 'python main.py --setup'."
+            )
+            sys.exit(1)
     else:
         default_yt_playlist_name = "Spotify Liked Songs Backup"
         yt_playlist_name = args.yt_playlist or default_yt_playlist_name
-        with console.status("[bold green]Fetching your Liked Songs from Spotify…[/bold green]") as status:
-            tracks = sp.fetch_liked_songs(limit=args.limit)
-            status.update(f"[bold green]Fetched {len(tracks)} songs![/bold green]")
+        try:
+            with console.status("[bold green]Fetching your Liked Songs from Spotify…[/bold green]") as status:
+                tracks = sp.fetch_liked_songs(limit=args.limit)
+                status.update(f"[bold green]Fetched {len(tracks)} songs![/bold green]")
 
-        console.print(f"  [cyan]🎵  {len(tracks)} liked songs fetched from Spotify[/cyan]\n")
+            console.print(f"  [cyan]🎵  {len(tracks)} liked songs fetched from Spotify[/cyan]\n")
+        except SpotifyPremiumRequiredError as exc:
+            console.print(
+                Panel(
+                    str(exc),
+                    title="[red bold]Spotify Premium Required[/red bold]",
+                    border_style="red",
+                    padding=(1, 2),
+                )
+            )
+            console.print(
+                "[yellow]Tip:[/yellow] Use a Premium account to create the Spotify app, "
+                "update SPOTIFY_CLIENT_ID, then re-run 'python main.py --setup'."
+            )
+            sys.exit(1)
 
     if not tracks:
         console.print("[yellow]No liked songs found. Exiting.[/yellow]")
@@ -562,7 +596,7 @@ def run(args: argparse.Namespace) -> None:
 
     matched_ids: list[str] = []
     added_set: set[str] = set()
-    stats = {"matched": 0, "skipped": 0, "cached": 0, "errors": 0}
+    stats = {"matched": 0, "skipped": 0, "cached": 0, "errors": 0, "resumed": 0}
     needs_review: list[tuple[SpotifyTrack, list[MatchResult]]] = []
 
     progress = Progress(
@@ -603,6 +637,8 @@ def run(args: argparse.Namespace) -> None:
                         else:
                             stats["skipped"] += 1
                             log_skipped(trk, "no match above threshold")
+                    elif status_str == "resumed":
+                        stats["resumed"] += 1
                     elif status_str == "error":
                         stats["errors"] += 1
                         log_skipped(trk, "error during matching")
@@ -691,6 +727,8 @@ def run(args: argparse.Namespace) -> None:
     )
     table.add_row("Errors", f"[red]{stats['errors']}[/red]")
     table.add_row("Cache hits", f"[cyan]{cache.hits}[/cyan]")
+    if stats["resumed"] > 0:
+        table.add_row("Resumed (cached skip)", f"[cyan]{stats['resumed']}[/cyan]")
     table.add_row("Time taken", f"[magenta]{overall_timer}[/magenta]")
 
     if stats["skipped"] > 0:
@@ -718,6 +756,11 @@ def main() -> None:
     """Parse args and run."""
     parser = build_parser()
     args = parser.parse_args()
+    try:
+        set_retry_cap(args.max_retries)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        sys.exit(2)
     try:
         run(args)
     except KeyboardInterrupt:

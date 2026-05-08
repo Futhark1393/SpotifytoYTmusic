@@ -16,6 +16,10 @@ from utils import Timer, retry
 
 logger = logging.getLogger("spotify2ytmusic")
 
+
+class SpotifyPremiumRequiredError(RuntimeError):
+    """Raised when Spotify requires Premium for saved tracks or playlists."""
+
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
@@ -81,6 +85,16 @@ class SpotifyClient:
         self._sp = spotipy.Spotify(auth_manager=auth_manager)
         logger.info("Spotify client ready.")
 
+    @staticmethod
+    def _raise_if_premium_required(exc: spotipy.exceptions.SpotifyException) -> None:
+        msg = str(exc).lower()
+        if exc.http_status == 403 and "premium subscription required" in msg:
+            raise SpotifyPremiumRequiredError(
+                "Spotify saved tracks and playlists may require a Premium subscription "
+                "for the app owner. Create the Spotify app under a Premium account "
+                "and re-run setup."
+            ) from exc
+
     # ------------------------------------------------------------------
 
     def fetch_liked_songs(self, limit: Optional[int] = None) -> list[SpotifyTrack]:
@@ -141,6 +155,7 @@ class SpotifyClient:
         base_delay=1.0,
         max_delay=30.0,
         retryable_exceptions=(Exception,),
+        abort_exceptions=(SpotifyPremiumRequiredError,),
     )
     def _fetch_page(self, offset: int, page_size: int) -> dict:
         """Fetch a single page of saved tracks with retry + rate-limit handling."""
@@ -149,6 +164,7 @@ class SpotifyClient:
                 limit=page_size, offset=offset
             )
         except spotipy.exceptions.SpotifyException as exc:
+            self._raise_if_premium_required(exc)
             if exc.http_status == 429:
                 retry_after = int(exc.headers.get("Retry-After", 5)) if exc.headers else 5
                 logger.warning(
@@ -157,12 +173,22 @@ class SpotifyClient:
                 time.sleep(retry_after)
             raise  # let @retry handle the re-attempt
 
-    @retry(max_attempts=3, base_delay=1.0, max_delay=10.0, retryable_exceptions=(Exception,))
+    @retry(
+        max_attempts=3,
+        base_delay=1.0,
+        max_delay=10.0,
+        retryable_exceptions=(Exception,),
+        abort_exceptions=(SpotifyPremiumRequiredError,),
+    )
     def get_playlist_name(self, playlist_id: str) -> str:
         """Fetch the name of a Spotify playlist."""
         try:
             pl = self._sp.playlist(playlist_id, fields="name")
             return pl.get("name", "Imported Playlist")
+        except spotipy.exceptions.SpotifyException as exc:
+            self._raise_if_premium_required(exc)
+            logger.warning("Could not fetch playlist name for %s: %s", playlist_id, exc)
+            return "Imported Playlist"
         except Exception as exc:
             logger.warning("Could not fetch playlist name for %s: %s", playlist_id, exc)
             return "Imported Playlist"
@@ -216,6 +242,7 @@ class SpotifyClient:
         base_delay=1.0,
         max_delay=30.0,
         retryable_exceptions=(Exception,),
+        abort_exceptions=(SpotifyPremiumRequiredError,),
     )
     def _fetch_playlist_page(self, playlist_id: str, offset: int, page_size: int) -> dict:
         """Fetch a single page of playlist tracks with retry + rate-limit handling."""
@@ -224,6 +251,7 @@ class SpotifyClient:
                 playlist_id, limit=page_size, offset=offset
             )
         except spotipy.exceptions.SpotifyException as exc:
+            self._raise_if_premium_required(exc)
             if exc.http_status == 429:
                 retry_after = int(exc.headers.get("Retry-After", 5)) if exc.headers else 5
                 logger.warning(

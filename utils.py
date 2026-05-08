@@ -7,10 +7,22 @@ import functools
 import logging
 import random
 import re
+import threading
 import time
 from typing import Any, Callable, Optional, TypeVar
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+# Global cap applied to all retry decorators (can be overridden via CLI)
+RETRY_CAP: int = 5
+
+
+def set_retry_cap(cap: int) -> None:
+    """Set a global cap on retry attempts (must be >= 1)."""
+    if cap < 1:
+        raise ValueError("Retry cap must be >= 1")
+    global RETRY_CAP
+    RETRY_CAP = cap
 
 # ---------------------------------------------------------------------------
 # Retry decorator with exponential back-off
@@ -35,6 +47,7 @@ def retry(
         max_delay: Cap for the back-off delay.
         retryable_exceptions: Tuple of exception types to retry on.
         abort_exceptions: Exception types that should not be retried.
+        Note: max_attempts is capped by RETRY_CAP (default: 5).
 
     Returns:
         Decorated function.
@@ -45,14 +58,15 @@ def retry(
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             logger = logging.getLogger("spotify2ytmusic")
             last_exc: Optional[Exception] = None
-            for attempt in range(1, max_attempts + 1):
+            attempts = min(max_attempts, RETRY_CAP)
+            for attempt in range(1, attempts + 1):
                 try:
                     return func(*args, **kwargs)
                 except retryable_exceptions as exc:
                     if abort_exceptions and isinstance(exc, abort_exceptions):
                         raise
                     last_exc = exc
-                    if attempt == max_attempts:
+                    if attempt == attempts:
                         break
                     delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
                     jitter = random.uniform(0, delay * 0.25)
@@ -86,13 +100,15 @@ class Throttle:
     def __init__(self, min_interval: float = 0.3) -> None:
         self._min_interval = min_interval
         self._last_call = 0.0
+        self._lock = threading.Lock()
 
     def wait(self) -> None:
         """Block until *min_interval* seconds have elapsed since the last call."""
-        elapsed = time.monotonic() - self._last_call
-        if elapsed < self._min_interval:
-            time.sleep(self._min_interval - elapsed)
-        self._last_call = time.monotonic()
+        with self._lock:
+            elapsed = time.monotonic() - self._last_call
+            if elapsed < self._min_interval:
+                time.sleep(self._min_interval - elapsed)
+            self._last_call = time.monotonic()
 
 
 # ---------------------------------------------------------------------------
