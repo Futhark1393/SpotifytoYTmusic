@@ -2,7 +2,7 @@
 
 Goal: transfer Spotify liked songs or a Spotify playlist to YouTube Music.
 
-Note: Spotify may require Premium for the app owner to access saved tracks and playlists.
+Note: This tool only reads metadata endpoints; Premium is not required. A 403 usually means auth or scopes are missing.
 
 Recommended auth: Spotify PKCE (Client Secret optional) + YouTube Music OAuth (oauth.json).
 

@@ -13,7 +13,7 @@ A production-ready CLI tool that transfers your **Liked Songs** from Spotify to 
 
 ## Features
 
-- **Full Spotify library export** – Fetches all liked songs via OAuth with automatic pagination (Spotify may require Premium for the app owner)
+- **Full Spotify library export** – Fetches all liked songs via OAuth with automatic pagination
 - **Spotify PKCE support** – Client Secret optional; PKCE used when missing
 - **YouTube Music OAuth support** – Supports oauth.json (no header copy) or browser.json
 - **Fuzzy matching** – Uses `rapidfuzz` (token_sort_ratio) to find the best YouTube Music match
@@ -24,7 +24,7 @@ A production-ready CLI tool that transfers your **Liked Songs** from Spotify to 
 - **Dry-run mode** – Test matching without modifying playlists
 - **Progress bar** – Real-time progress via Rich
 - **Skipped log** – All unmatched/failed tracks logged to `skipped.log`
-- **Playlist import** – Transfer a Spotify playlist by ID/URL (`--playlist`); requires Premium for the Spotify app owner (Spotify API limitation)
+- **Playlist import** – Transfer a Spotify playlist by ID/URL (`--playlist`)
 - **Interactive review** – Manually pick matches below threshold (`--interactive`)
 - **Configurable paths** – Custom headers, cache, and skipped log paths
 - **Custom playlist title** – Override the YouTube Music playlist name
@@ -72,7 +72,7 @@ The `--setup` flow:
 2. Create an app and note your **Client ID** (Client Secret is optional)
 3. Add `http://127.0.0.1:8888/callback` as a Redirect URI
 4. Create `.env` (from `.env.example`) and set `SPOTIFY_CLIENT_ID`
-  - Note: Spotify may require the app owner to have Premium for saved tracks and playlists
+  - Note: This tool only reads metadata; Premium is not required. If you see 403, re-auth and confirm scopes.
 
 **YouTube Music**
 
@@ -168,7 +168,7 @@ python main.py --headers ./browser.json --cache-path ./match_cache.db --skipped-
 | `--threshold N` | Min fuzzy-match score (0-100) | 80 |
 | `--workers N` | Concurrent YouTube search workers | 5 |
 | `--max-retries N` | Cap retry attempts | 5 |
-| `--playlist` | Spotify playlist ID or URL (requires Premium for the app owner) | None |
+| `--playlist` | Spotify playlist ID or URL | None |
 | `--interactive` / `-i` | Manual review for low-confidence matches | Off |
 | `--headers PATH` | YouTube Music auth JSON path (browser.json or oauth.json) | Auto |
 | `--cache-path PATH` | SQLite cache file path | match_cache.db |
@@ -181,10 +181,22 @@ python main.py --headers ./browser.json --cache-path ./match_cache.db --skipped-
 python -m unittest discover -s tests
 ```
 
+### Integration tests (real APIs)
+
+These tests hit real Spotify endpoints and require valid credentials.
+
+```bash
+export RUN_REAL_TESTS=1
+export SPOTIFY_CLIENT_ID=your_client_id
+export SPOTIFY_CLIENT_SECRET=your_client_secret  # optional if PKCE is used
+export SPOTIFY_TEST_PLAYLIST_ID=your_playlist_id # optional
+python -m unittest discover -s tests
+```
+
 ## Troubleshooting
 
-**Spotify 403: Premium required**
-Spotify may require the app owner (the account that created the Spotify app) to have Premium for saved tracks and playlist endpoints. Create the app under a Premium account, update `SPOTIFY_CLIENT_ID`, then re-run `python main.py --setup`.
+**Spotify 403: Forbidden**
+This tool only reads metadata endpoints; Premium is not required. A 403 usually means auth or scopes are missing. Re-auth and confirm scopes: `user-library-read`, `playlist-read-private`, `playlist-read-collaborative`.
 
 **Permission denied: .env (Windows)**
 If setup fails with `PermissionError: [Errno 13] Permission denied: '.env'`:

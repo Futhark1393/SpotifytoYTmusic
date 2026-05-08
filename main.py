@@ -47,7 +47,7 @@ from rich.text import Text
 
 from cache import SKIP_SENTINEL, MatchCache
 from matcher import MatchResult, TrackMatcher
-from spotify_client import SpotifyClient, SpotifyPremiumRequiredError, SpotifyTrack
+from spotify_client import SpotifyClient, SpotifyAuthError, SpotifyTrack
 from utils import Timer, set_retry_cap
 from ytmusic_client import YTMusicClient, YTMusicAuthError
 
@@ -527,18 +527,18 @@ def run(args: argparse.Namespace) -> None:
                 status.update(f"[bold green]Fetched {len(tracks)} songs![/bold green]")
 
             console.print(f"  [cyan]🎵  {len(tracks)} songs fetched from playlist '{sp_playlist_name}'[/cyan]\n")
-        except SpotifyPremiumRequiredError as exc:
+        except SpotifyAuthError as exc:
             console.print(
                 Panel(
                     str(exc),
-                    title="[red bold]Spotify Premium Required[/red bold]",
+                    title="[red bold]Spotify Auth/Permission Error[/red bold]",
                     border_style="red",
                     padding=(1, 2),
                 )
             )
             console.print(
-                "[yellow]Tip:[/yellow] Use a Premium account to create the Spotify app, "
-                "update SPOTIFY_CLIENT_ID, then re-run 'python main.py --setup'."
+                "[yellow]Tip:[/yellow] Re-auth and confirm scopes: "
+                "user-library-read, playlist-read-private, playlist-read-collaborative."
             )
             sys.exit(1)
     else:
@@ -550,18 +550,18 @@ def run(args: argparse.Namespace) -> None:
                 status.update(f"[bold green]Fetched {len(tracks)} songs![/bold green]")
 
             console.print(f"  [cyan]🎵  {len(tracks)} liked songs fetched from Spotify[/cyan]\n")
-        except SpotifyPremiumRequiredError as exc:
+        except SpotifyAuthError as exc:
             console.print(
                 Panel(
                     str(exc),
-                    title="[red bold]Spotify Premium Required[/red bold]",
+                    title="[red bold]Spotify Auth/Permission Error[/red bold]",
                     border_style="red",
                     padding=(1, 2),
                 )
             )
             console.print(
-                "[yellow]Tip:[/yellow] Use a Premium account to create the Spotify app, "
-                "update SPOTIFY_CLIENT_ID, then re-run 'python main.py --setup'."
+                "[yellow]Tip:[/yellow] Re-auth and confirm scopes: "
+                "user-library-read, playlist-read-private, playlist-read-collaborative."
             )
             sys.exit(1)
 

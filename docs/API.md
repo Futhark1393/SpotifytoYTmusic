@@ -17,7 +17,7 @@ spotify_client.py
 - SpotifyClient.fetch_liked_songs(limit): fetch saved tracks
 - SpotifyClient.fetch_playlist_tracks(playlist_id, limit): fetch playlist tracks
 - SpotifyClient.get_playlist_name(playlist_id): fetch playlist name
-- SpotifyPremiumRequiredError: raised when Spotify requires Premium for app owner
+- SpotifyAuthError: raised when Spotify returns 403 (auth/scope issue; Premium not required for metadata)
 
 ytmusic_client.py
 - YTMusicClient.search(query, limit): search YouTube Music
