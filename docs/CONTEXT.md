@@ -14,7 +14,7 @@ Outputs
 - YouTube Music playlist: created or reused
 
 Flow
-1. preflight_check ensures Spotify ID + YT auth are present (or directs to --setup)
+1. preflight_check ensures Spotify ID + YT auth are present (prompts for new-user setup if auth exists)
 2. SpotifyClient fetches tracks
 3. TrackMatcher searches YouTube Music and scores matches
 4. MatchCache stores video IDs or SKIP sentinel

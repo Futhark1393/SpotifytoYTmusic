@@ -62,6 +62,7 @@ The `--setup` flow:
 
 - Prompts for `SPOTIFY_CLIENT_ID` (Client Secret optional; PKCE used if missing)
 - Starts YouTube Music auth (OAuth recommended) to create `oauth.json` or `browser.json`
+- If auth files already exist, asks whether this is a new user setup; answering yes re-authenticates
 
 ### Manual setup (optional)
 
@@ -79,6 +80,9 @@ ytmusicapi oauth    # recommended, creates oauth.json
 # or
 ytmusicapi browser  # manual headers, creates browser.json
 ```
+
+If both `oauth.json` and `browser.json` exist, the CLI will ask which one to use.
+Use `--headers PATH` to skip the prompt and force a specific file.
 
 ## Usage
 

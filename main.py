@@ -49,7 +49,7 @@ from cache import SKIP_SENTINEL, MatchCache
 from matcher import MatchResult, TrackMatcher
 from spotify_client import SpotifyClient, SpotifyTrack
 from utils import Timer
-from ytmusic_client import YTMusicClient
+from ytmusic_client import YTMusicClient, YTMusicAuthError
 
 console = Console()
 logger: logging.Logger  # initialised in main()
@@ -322,6 +322,27 @@ def setup_ytmusic_auth() -> Optional[Path]:
     return YT_OAUTH_FILE
 
 
+def _ask_new_user_setup() -> bool:
+    answer = console.input(
+        "[bold cyan]  Is this a new user setup?[/bold cyan] [dim](y/N):[/dim] "
+    ).strip().lower()
+    return answer in {"y", "yes"}
+
+
+def _choose_existing_yt_auth() -> Path:
+    console.print(
+        Panel(
+            "Both oauth.json and browser.json were found.\n"
+            "Choose which one to use for this run:",
+            title="[bold green]YouTube Music Auth[/bold green]",
+            border_style="green",
+            padding=(1, 2),
+        )
+    )
+    choice = console.input("[bold cyan]  Choose 1 (oauth) or 2 (browser)[/bold cyan] [dim](default: 1):[/dim] ").strip() or "1"
+    return YT_BROWSER_FILE if choice == "2" else YT_OAUTH_FILE
+
+
 def run_setup() -> bool:
     """Run guided setup for Spotify and YouTube Music auth."""
     console.print(
@@ -367,20 +388,47 @@ def preflight_check(headers_arg: Optional[str]) -> Path:
             "  → Run: [bold cyan]python main.py --setup[/bold cyan]"
         )
 
-    yt_auth_path = _resolve_yt_auth_path(headers_arg)
-    if yt_auth_path is None or not yt_auth_path.exists():
-        if headers_arg:
+    yt_auth_path: Optional[Path] = None
+    if headers_arg:
+        yt_auth_path = Path(headers_arg)
+        if not yt_auth_path.exists():
             errors.append(
                 f"[bold]{headers_arg}[/bold] not found\n"
                 "  → Run: [bold cyan]ytmusicapi oauth[/bold cyan] (recommended)\n"
                 "  → Or: [bold cyan]ytmusicapi browser[/bold cyan]\n"
                 "  → Or: [bold cyan]python main.py --setup[/bold cyan]"
             )
+    else:
+        oauth_exists = YT_OAUTH_FILE.exists()
+        browser_exists = YT_BROWSER_FILE.exists()
+        if oauth_exists or browser_exists:
+            if _ask_new_user_setup():
+                yt_auth_path = setup_ytmusic_auth()
+                if yt_auth_path is None or not yt_auth_path.exists():
+                    errors.append(
+                        "YouTube Music setup did not complete.\n"
+                        "  → Run: [bold cyan]python main.py --setup[/bold cyan]"
+                    )
+            else:
+                if oauth_exists and browser_exists:
+                    yt_auth_path = _choose_existing_yt_auth()
+                else:
+                    yt_auth_path = _resolve_yt_auth_path(None)
         else:
-            errors.append(
-                "No YouTube Music auth file found (oauth.json or browser.json)\n"
-                "  → Run: [bold cyan]python main.py --setup[/bold cyan]"
+            console.print(
+                Panel(
+                    "No YouTube Music auth file found. Starting setup…",
+                    title="[yellow bold]Setup Required[/yellow bold]",
+                    border_style="yellow",
+                    padding=(1, 2),
+                )
             )
+            yt_auth_path = setup_ytmusic_auth()
+            if yt_auth_path is None or not yt_auth_path.exists():
+                errors.append(
+                    "YouTube Music setup did not complete.\n"
+                    "  → Run: [bold cyan]python main.py --setup[/bold cyan]"
+                )
 
     if errors:
         msg = "\n\n".join(f"[red]✗[/red]  {e}" for e in errors)
@@ -489,7 +537,20 @@ def run(args: argparse.Namespace) -> None:
 
     # ---- 2. Initialise YouTube Music & matcher ----
     with console.status("[bold green]Connecting to YouTube Music…[/bold green]"):
-        yt = YTMusicClient(auth_path=yt_auth_path)
+        try:
+            yt = YTMusicClient(auth_path=yt_auth_path)
+            if not args.dry_run:
+                yt.ensure_authenticated()
+        except YTMusicAuthError as exc:
+            console.print(
+                Panel(
+                    str(exc),
+                    title="[red bold]YouTube Music Auth Error[/red bold]",
+                    border_style="red",
+                    padding=(1, 2),
+                )
+            )
+            sys.exit(1)
         matcher = TrackMatcher(yt, threshold=args.threshold)
         cache = MatchCache(db_path=Path(args.cache_path))
 

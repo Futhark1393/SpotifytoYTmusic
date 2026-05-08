@@ -25,6 +25,7 @@ def retry(
     base_delay: float = 1.0,
     max_delay: float = 30.0,
     retryable_exceptions: tuple = (Exception,),
+    abort_exceptions: tuple[type[BaseException], ...] = (),
 ) -> Callable[[F], F]:
     """Decorator that retries a function with exponential back-off and jitter.
 
@@ -33,6 +34,7 @@ def retry(
         base_delay: Initial delay in seconds.
         max_delay: Cap for the back-off delay.
         retryable_exceptions: Tuple of exception types to retry on.
+        abort_exceptions: Exception types that should not be retried.
 
     Returns:
         Decorated function.
@@ -47,6 +49,8 @@ def retry(
                 try:
                     return func(*args, **kwargs)
                 except retryable_exceptions as exc:
+                    if abort_exceptions and isinstance(exc, abort_exceptions):
+                        raise
                     last_exc = exc
                     if attempt == max_attempts:
                         break
